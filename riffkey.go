@@ -23,6 +23,24 @@ const (
 	ModShift
 )
 
+// String returns a human-readable representation of the modifier(s).
+func (m Modifier) String() string {
+	if m == ModNone {
+		return "None"
+	}
+	var parts []string
+	if m&ModCtrl != 0 {
+		parts = append(parts, "Ctrl")
+	}
+	if m&ModAlt != 0 {
+		parts = append(parts, "Alt")
+	}
+	if m&ModShift != 0 {
+		parts = append(parts, "Shift")
+	}
+	return strings.Join(parts, "+")
+}
+
 // Special represents special (non-printable) keys.
 type Special uint8
 
@@ -56,6 +74,17 @@ const (
 	SpecialF11
 	SpecialF12
 )
+
+// String returns a human-readable representation of the special key.
+func (s Special) String() string {
+	if s == SpecialNone {
+		return "None"
+	}
+	if name, ok := specialToVim[s]; ok {
+		return name
+	}
+	return "Unknown"
+}
 
 // Key represents a single keypress with optional modifiers.
 type Key struct {
@@ -327,9 +356,18 @@ func (r *Router) Handle(pattern string, h Handler) {
 // HandleNamed registers a handler with a semantic name for introspection and rebinding.
 // The name should be a descriptive action like "scroll_down" or "go_to_top".
 // Users can later rebind this action using Rebind() or config files.
+// If the name already exists, the old binding is replaced.
 func (r *Router) HandleNamed(name, defaultPattern string, h Handler) {
 	if r.namedBindings == nil {
 		r.namedBindings = make(map[string]*namedBinding)
+	}
+
+	// If name already exists, remove the old pattern from the trie
+	if existing, ok := r.namedBindings[name]; ok {
+		r.removePattern(existing.currentPattern)
+	} else {
+		// Only add to order if this is a new binding
+		r.bindingOrder = append(r.bindingOrder, name)
 	}
 
 	r.namedBindings[name] = &namedBinding{
@@ -337,7 +375,6 @@ func (r *Router) HandleNamed(name, defaultPattern string, h Handler) {
 		currentPattern: defaultPattern,
 		handler:        h,
 	}
-	r.bindingOrder = append(r.bindingOrder, name)
 	r.registerPattern(defaultPattern, h)
 }
 
@@ -474,14 +511,6 @@ func (r *Router) ApplyBindings(bindings map[string]string) {
 	}
 }
 
-// configFile represents the structure of ~/.config/riffkey.toml
-type configFile struct {
-	Global   map[string]string            `toml:"global"`
-	Apps     map[string]map[string]string `toml:"-"` // Filled by custom parsing
-	Aliases  map[string]string            `toml:"aliases"`
-	rawTable map[string]interface{}
-}
-
 // ConfigPath returns the default config file path.
 // Respects XDG_CONFIG_HOME if set, otherwise uses ~/.config/riffkey.toml
 func ConfigPath() string {
@@ -559,11 +588,33 @@ func (r *Router) WriteDefaultBindings(w io.Writer, appName string) error {
 
 	sb.WriteString("[" + appName + "]\n")
 	for _, b := range r.Bindings() {
-		sb.WriteString("# " + b.Name + " = \"" + b.DefaultPattern + "\"\n")
+		sb.WriteString("# " + b.Name + " = \"" + escapeTomlString(b.DefaultPattern) + "\"\n")
 	}
 
 	_, err := w.Write([]byte(sb.String()))
 	return err
+}
+
+// escapeTomlString escapes a string for use in a TOML basic string (double-quoted).
+func escapeTomlString(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\':
+			sb.WriteString("\\\\")
+		case '"':
+			sb.WriteString("\\\"")
+		case '\n':
+			sb.WriteString("\\n")
+		case '\r':
+			sb.WriteString("\\r")
+		case '\t':
+			sb.WriteString("\\t")
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }
 
 // match attempts to match a sequence of keys.
@@ -666,13 +717,14 @@ func parseVimKey(s string) Key {
 
 // Input manages a stack of routers and dispatches keys.
 type Input struct {
-	stack       []*Router
-	buffer      []Key
-	countBuffer string // accumulated digit characters for count prefix
-	mu          sync.Mutex
-	timer       *time.Timer
-	pending     Handler
-	pendingKeys []Key
+	stack         []*Router
+	buffer        []Key
+	countBuffer   string // accumulated digit characters for count prefix
+	mu            sync.Mutex
+	timer         *time.Timer
+	pending       Handler
+	pendingKeys   []Key
+	pendingRouter *Router // router that owns the pending handler
 }
 
 // NewInput creates a new Input with the given root router.
@@ -795,15 +847,18 @@ func (i *Input) Dispatch(key Key) bool {
 		i.pending = handler
 		i.pendingKeys = make([]Key, consumed)
 		copy(i.pendingKeys, i.buffer[:consumed])
+		i.pendingRouter = router
 		pendingCount := i.parseCount()
 
 		i.timer = time.AfterFunc(router.timeout, func() {
 			i.mu.Lock()
-			if i.pending != nil {
+			// Only fire if pending is set and the router is still current
+			if i.pending != nil && len(i.stack) > 0 && i.stack[len(i.stack)-1] == i.pendingRouter {
 				h := i.pending
 				keys := i.pendingKeys
 				i.pending = nil
 				i.pendingKeys = nil
+				i.pendingRouter = nil
 				i.buffer = i.buffer[len(keys):]
 				i.countBuffer = ""
 				i.mu.Unlock()
@@ -846,6 +901,7 @@ func (i *Input) clearBuffer() {
 	}
 	i.pending = nil
 	i.pendingKeys = nil
+	i.pendingRouter = nil
 	i.buffer = nil
 	i.countBuffer = ""
 }
@@ -860,6 +916,7 @@ func (i *Input) Flush() {
 		count := i.parseCount()
 		i.pending = nil
 		i.pendingKeys = nil
+		i.pendingRouter = nil
 		i.buffer = nil
 		i.countBuffer = ""
 		if i.timer != nil {

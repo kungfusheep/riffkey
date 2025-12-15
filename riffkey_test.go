@@ -2062,3 +2062,139 @@ func TestConfigPath(t *testing.T) {
 		t.Errorf("config path should end with riffkey.toml, got %s", path)
 	}
 }
+
+func TestModifierString(t *testing.T) {
+	tests := []struct {
+		mod  Modifier
+		want string
+	}{
+		{ModNone, "None"},
+		{ModCtrl, "Ctrl"},
+		{ModAlt, "Alt"},
+		{ModShift, "Shift"},
+		{ModCtrl | ModAlt, "Ctrl+Alt"},
+		{ModCtrl | ModShift, "Ctrl+Shift"},
+		{ModAlt | ModShift, "Alt+Shift"},
+		{ModCtrl | ModAlt | ModShift, "Ctrl+Alt+Shift"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.mod.String(); got != tt.want {
+				t.Errorf("Modifier.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSpecialString(t *testing.T) {
+	tests := []struct {
+		special Special
+		want    string
+	}{
+		{SpecialNone, "None"},
+		{SpecialEscape, "Esc"},
+		{SpecialEnter, "CR"},
+		{SpecialTab, "Tab"},
+		{SpecialSpace, "Space"},
+		{SpecialUp, "Up"},
+		{SpecialF1, "F1"},
+		{SpecialF12, "F12"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.special.String(); got != tt.want {
+				t.Errorf("Special.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteDefaultBindingsEscaping(t *testing.T) {
+	r := NewRouter()
+	r.HandleNamed("test_quotes", `"quoted"`, func(m Match) {})
+	r.HandleNamed("test_backslash", `path\to\file`, func(m Match) {})
+	r.HandleNamed("test_newline", "line1\nline2", func(m Match) {})
+
+	var buf bytes.Buffer
+	if err := r.WriteDefaultBindings(&buf, "myapp"); err != nil {
+		t.Fatalf("WriteDefaultBindings error: %v", err)
+	}
+
+	output := buf.String()
+
+	// Check quotes are escaped
+	if !strings.Contains(output, `\"quoted\"`) {
+		t.Error("quotes should be escaped")
+	}
+
+	// Check backslashes are escaped
+	if !strings.Contains(output, `path\\to\\file`) {
+		t.Error("backslashes should be escaped")
+	}
+
+	// Check newlines are escaped
+	if !strings.Contains(output, `\n`) {
+		t.Error("newlines should be escaped")
+	}
+}
+
+func TestHandleNamedDuplicate(t *testing.T) {
+	r := NewRouter()
+
+	var firstHit, secondHit bool
+	r.HandleNamed("action", "j", func(m Match) { firstHit = true })
+	r.HandleNamed("action", "k", func(m Match) { secondHit = true })
+
+	// Should only have one binding
+	bindings := r.Bindings()
+	if len(bindings) != 1 {
+		t.Errorf("expected 1 binding, got %d", len(bindings))
+	}
+
+	// New pattern should be active
+	if bindings[0].Pattern != "k" {
+		t.Errorf("expected pattern 'k', got %s", bindings[0].Pattern)
+	}
+
+	// Old key should not work
+	input := NewInput(r)
+	input.Dispatch(Key{Rune: 'j'})
+	if firstHit {
+		t.Error("old binding 'j' should not fire")
+	}
+
+	// New key should work
+	input.Dispatch(Key{Rune: 'k'})
+	if !secondHit {
+		t.Error("new binding 'k' should fire")
+	}
+}
+
+func TestPendingHandlerNotFiredAfterPop(t *testing.T) {
+	normal := NewRouter().Name("normal").Timeout(50 * time.Millisecond)
+	insert := NewRouter().Name("insert")
+
+	var normalGHit atomic.Bool
+
+	// Set up ambiguous binding in normal mode
+	normal.Handle("g", func(m Match) { normalGHit.Store(true) })
+	normal.Handle("gg", func(m Match) {})
+
+	input := NewInput(normal)
+
+	// Start a pending sequence
+	input.Dispatch(Key{Rune: 'g'})
+
+	// Push a different router before timeout
+	input.Push(insert)
+
+	// Wait for timeout
+	time.Sleep(80 * time.Millisecond)
+
+	// The pending handler should NOT have fired because we changed routers
+	if normalGHit.Load() {
+		t.Error("pending handler should not fire after Pop/Push changes the router")
+	}
+}
