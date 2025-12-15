@@ -571,7 +571,8 @@ func (r *Router) LoadBindingsFrom(path, appName string) error {
 	}
 
 	// Apply app-specific bindings (override global)
-	if appSection, ok := raw[appName].(map[string]interface{}); ok {
+	// Supports dotted names like "browse.toc" which map to [browse.toc] in TOML
+	if appSection := getNestedSection(raw, appName); appSection != nil {
 		for name, pattern := range appSection {
 			if s, ok := pattern.(string); ok {
 				r.Rebind(name, s)
@@ -580,6 +581,21 @@ func (r *Router) LoadBindingsFrom(path, appName string) error {
 	}
 
 	return nil
+}
+
+// getNestedSection retrieves a section from a nested map using dot notation.
+// For example, "browse.toc" returns raw["browse"]["toc"].
+func getNestedSection(raw map[string]interface{}, path string) map[string]interface{} {
+	parts := strings.Split(path, ".")
+	current := raw
+	for _, part := range parts {
+		next, ok := current[part].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		current = next
+	}
+	return current
 }
 
 // WriteDefaultBindings writes a TOML config template with all bindings commented out.

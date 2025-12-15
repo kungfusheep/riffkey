@@ -2052,6 +2052,45 @@ func TestLoadBindingsMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadBindingsNestedSection(t *testing.T) {
+	r := NewRouter()
+	r.HandleNamed("scroll_down", "j", func(m Match) {})
+	r.HandleNamed("scroll_up", "k", func(m Match) {})
+
+	// Create temp config with nested sections
+	configContent := `
+[browse]
+scroll_down = "n"
+
+[browse.toc]
+scroll_down = "x"
+scroll_up = "y"
+`
+	tmpFile, err := os.CreateTemp("", "riffkey-nested-test-*.toml")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(configContent); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Load config with dotted app name
+	if err := r.LoadBindingsFrom(tmpFile.Name(), "browse.toc"); err != nil {
+		t.Fatalf("LoadBindingsFrom error: %v", err)
+	}
+
+	// Should have loaded from [browse.toc] section
+	if r.BindingsMap()["scroll_down"] != "x" {
+		t.Errorf("expected scroll_down='x' from [browse.toc], got %s", r.BindingsMap()["scroll_down"])
+	}
+	if r.BindingsMap()["scroll_up"] != "y" {
+		t.Errorf("expected scroll_up='y' from [browse.toc], got %s", r.BindingsMap()["scroll_up"])
+	}
+}
+
 func TestConfigPath(t *testing.T) {
 	path := ConfigPath()
 	if path == "" {
