@@ -197,6 +197,10 @@ type Match struct {
 // Handler is a function that handles a matched key sequence.
 type Handler func(m Match)
 
+// MsgHandler is a function that returns a message in response to a matched key sequence.
+// Used with HandleMsg/HandleNamedMsg for framework integration (e.g., Bubble Tea).
+type MsgHandler func(m Match) any
+
 // Binding represents a named key binding with its current and default patterns.
 type Binding struct {
 	Name           string // Semantic action name (e.g., "scroll_down")
@@ -220,6 +224,10 @@ type Router struct {
 	aliases            map[string]string // user-defined pattern aliases (e.g., "Leader" -> ",")
 	namedBindings      map[string]*namedBinding
 	bindingOrder       []string // preserve registration order for Bindings()
+
+	// Send is called with the return value of MsgHandler functions.
+	// Set this to integrate with frameworks like Bubble Tea.
+	Send func(any)
 }
 
 type trieNode struct {
@@ -227,13 +235,28 @@ type trieNode struct {
 	handler  Handler
 }
 
+// RouterOption configures a Router.
+type RouterOption func(*Router)
+
+// WithSender sets the Send function from any type with a Send method.
+// Works with *tea.Program and similar types.
+func WithSender[T any](s interface{ Send(T) }) RouterOption {
+	return func(r *Router) {
+		r.Send = func(msg any) { s.Send(msg.(T)) }
+	}
+}
+
 // NewRouter creates a new Router with default settings.
-func NewRouter() *Router {
-	return &Router{
+func NewRouter(opts ...RouterOption) *Router {
+	r := &Router{
 		root:          &trieNode{children: make(map[Key]*trieNode)},
 		timeout:       2 * time.Second,
 		namedBindings: make(map[string]*namedBinding),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // HasEscapeSequences returns true if any registered pattern uses keys
@@ -376,6 +399,28 @@ func (r *Router) HandleNamed(name, defaultPattern string, h Handler) {
 		handler:        h,
 	}
 	r.registerPattern(defaultPattern, h)
+}
+
+// HandleMsg registers a message-returning handler for the given pattern.
+// When the pattern matches, h is called and its return value is passed to Send.
+// This enables clean integration with frameworks like Bubble Tea.
+func (r *Router) HandleMsg(pattern string, h MsgHandler) {
+	r.Handle(pattern, r.wrapMsgHandler(h))
+}
+
+// HandleNamedMsg registers a named message-returning handler.
+// Combines HandleNamed semantics with HandleMsg behavior.
+func (r *Router) HandleNamedMsg(name, defaultPattern string, h MsgHandler) {
+	r.HandleNamed(name, defaultPattern, r.wrapMsgHandler(h))
+}
+
+// wrapMsgHandler converts a MsgHandler to a Handler by calling Send with the result.
+func (r *Router) wrapMsgHandler(h MsgHandler) Handler {
+	return func(m Match) {
+		if msg := h(m); msg != nil && r.Send != nil {
+			r.Send(msg)
+		}
+	}
 }
 
 // registerPattern does the actual pattern registration in the trie.
@@ -547,13 +592,13 @@ func (r *Router) LoadBindingsFrom(path, appName string) error {
 	}
 
 	// Parse into a generic map first
-	var raw map[string]interface{}
+	var raw map[string]any
 	if _, err := toml.Decode(string(data), &raw); err != nil {
 		return err
 	}
 
 	// Apply global aliases
-	if aliases, ok := raw["aliases"].(map[string]interface{}); ok {
+	if aliases, ok := raw["aliases"].(map[string]any); ok {
 		for name, expansion := range aliases {
 			if s, ok := expansion.(string); ok {
 				r.SetAlias(name, s)
@@ -562,7 +607,7 @@ func (r *Router) LoadBindingsFrom(path, appName string) error {
 	}
 
 	// Apply global bindings
-	if global, ok := raw["global"].(map[string]interface{}); ok {
+	if global, ok := raw["global"].(map[string]any); ok {
 		for name, pattern := range global {
 			if s, ok := pattern.(string); ok {
 				r.Rebind(name, s)
@@ -585,11 +630,11 @@ func (r *Router) LoadBindingsFrom(path, appName string) error {
 
 // getNestedSection retrieves a section from a nested map using dot notation.
 // For example, "browse.toc" returns raw["browse"]["toc"].
-func getNestedSection(raw map[string]interface{}, path string) map[string]interface{} {
+func getNestedSection(raw map[string]any, path string) map[string]any {
 	parts := strings.Split(path, ".")
 	current := raw
 	for _, part := range parts {
-		next, ok := current[part].(map[string]interface{})
+		next, ok := current[part].(map[string]any)
 		if !ok {
 			return nil
 		}
@@ -1126,10 +1171,7 @@ func (r *Reader) ensureBytesWithTimeout(n int) {
 	}
 
 	// Start new async read with timeout
-	space := len(r.buf) - r.end
-	if space > len(r.tmp) {
-		space = len(r.tmp)
-	}
+	space := min(len(r.buf)-r.end, len(r.tmp))
 	if space > 0 {
 		r.readPending = true
 		go func() {
@@ -1188,10 +1230,7 @@ func (r *Reader) ensureBytes(n int) error {
 	}
 
 	// Try to read more
-	space := len(r.buf) - r.end
-	if space > len(r.tmp) {
-		space = len(r.tmp)
-	}
+	space := min(len(r.buf)-r.end, len(r.tmp))
 	if space > 0 {
 		read, err := r.r.Read(r.tmp[:space])
 		if read > 0 {

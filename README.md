@@ -185,3 +185,33 @@ router.Handle("gg", func(m riffkey.Match) { /* ... */ })
 ## Escape Key Handling
 
 The reader automatically detects whether the router uses escape sequences (arrow keys, F-keys, Alt+key). If not, the Escape key returns immediately without the 50ms detection delay.
+
+## Bubble Tea Integration
+
+riffkey offers an alternative to Bubble Tea's input handling, providing vim-style sequences, count prefixes, and shared config.
+
+```go
+p := tea.NewProgram(model, tea.WithInput(nil), tea.WithAltScreen())
+
+router := riffkey.NewRouter(riffkey.WithSender(p))
+
+router.HandleNamedMsg("move_down", "j", func(m riffkey.Match) any {
+    return moveCmd(m.Count)
+})
+router.HandleNamedMsg("window_down", "<C-w>j", func(m riffkey.Match) any {
+    return focusPaneDown{}
+})
+router.HandleNamedMsg("quit", "q", func(m riffkey.Match) any {
+    return tea.Quit()
+})
+
+router.LoadBindings("myapp")
+
+go riffkey.NewInput(router).Run(riffkey.NewReader(os.Stdin), nil)
+
+p.Run()
+```
+
+`HandleMsg` and `HandleNamedMsg` return messages that are passed to `Send`. The generic `WithSender[T]` works with any type that has a `Send(T)` method.
+
+See [cmd/bubbletea-example](cmd/bubbletea-example/main.go) for a complete working example.

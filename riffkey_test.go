@@ -2237,3 +2237,69 @@ func TestPendingHandlerNotFiredAfterPop(t *testing.T) {
 		t.Error("pending handler should not fire after Pop/Push changes the router")
 	}
 }
+
+func TestHandleMsg(t *testing.T) {
+	var received []any
+
+	r := NewRouter()
+	r.Send = func(msg any) { received = append(received, msg) }
+
+	r.HandleMsg("j", func(m Match) any { return "down" })
+	r.HandleMsg("5j", func(m Match) any { return m.Count }) // won't match, just "j" with count
+	r.HandleNamedMsg("up", "k", func(m Match) any { return "up" })
+
+	input := NewInput(r)
+
+	// Simple dispatch
+	input.Dispatch(Key{Rune: 'j'})
+	if len(received) != 1 || received[0] != "down" {
+		t.Errorf("expected 'down', got %v", received)
+	}
+
+	// With count prefix
+	received = nil
+	input.Dispatch(Key{Rune: '5'})
+	input.Dispatch(Key{Rune: 'j'})
+	if len(received) != 1 || received[0] != "down" {
+		t.Errorf("expected 'down' with count, got %v", received)
+	}
+
+	// Named binding
+	received = nil
+	input.Dispatch(Key{Rune: 'k'})
+	if len(received) != 1 || received[0] != "up" {
+		t.Errorf("expected 'up', got %v", received)
+	}
+
+	// Verify named binding is registered
+	bindings := r.Bindings()
+	if len(bindings) != 1 || bindings[0].Name != "up" {
+		t.Errorf("expected named binding 'up', got %v", bindings)
+	}
+}
+
+func TestHandleMsgNilSend(t *testing.T) {
+	r := NewRouter()
+	// Send is nil - should not panic
+
+	r.HandleMsg("j", func(m Match) any { return "test" })
+
+	input := NewInput(r)
+	input.Dispatch(Key{Rune: 'j'}) // Should not panic
+}
+
+func TestHandleMsgNilReturn(t *testing.T) {
+	var called bool
+
+	r := NewRouter()
+	r.Send = func(msg any) { called = true }
+
+	r.HandleMsg("j", func(m Match) any { return nil }) // Returns nil
+
+	input := NewInput(r)
+	input.Dispatch(Key{Rune: 'j'})
+
+	if called {
+		t.Error("Send should not be called when handler returns nil")
+	}
+}
