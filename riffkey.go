@@ -815,6 +815,20 @@ func (i *Input) Pop() {
 	}
 }
 
+// SetRouter replaces the base router (bottom of stack).
+// Any modals pushed on top are preserved.
+// Use this to swap between views without affecting modal state.
+func (i *Input) SetRouter(r *Router) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.clearBuffer()
+	if len(i.stack) == 0 {
+		i.stack = []*Router{r}
+	} else {
+		i.stack[0] = r
+	}
+}
+
 // Current returns the currently active router.
 func (i *Input) Current() *Router {
 	i.mu.Lock()
