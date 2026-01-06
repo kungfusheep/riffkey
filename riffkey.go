@@ -224,6 +224,7 @@ type Router struct {
 	aliases            map[string]string // user-defined pattern aliases (e.g., "Leader" -> ",")
 	namedBindings      map[string]*namedBinding
 	bindingOrder       []string // preserve registration order for Bindings()
+	unmatched          func(Key) bool // fallback for unmatched keys
 
 	// Send is called with the return value of MsgHandler functions.
 	// Set this to integrate with frameworks like Bubble Tea.
@@ -316,6 +317,159 @@ func (r *Router) SetAlias(name, expansion string) *Router {
 	}
 	r.aliases[strings.ToLower(name)] = expansion
 	return r
+}
+
+// HandleUnmatched sets a fallback handler for keys that don't match any pattern.
+// The handler returns true if it consumed the key, false otherwise.
+// This is useful for text input modes where most keys should be inserted.
+func (r *Router) HandleUnmatched(fn func(Key) bool) *Router {
+	r.unmatched = fn
+	return r
+}
+
+// TextInput configures this router for text input mode.
+// Unmatched printable keys are inserted into value at cursor position.
+// Common editing keys (Backspace, Delete, arrows, etc.) are handled automatically.
+// Returns the router for chaining.
+func (r *Router) TextInput(value *string, cursor *int) *Router {
+	th := NewTextHandler(value, cursor)
+	return r.HandleUnmatched(th.HandleKey)
+}
+
+// TextHandler manages text editing state and handles keyboard input.
+type TextHandler struct {
+	Value    *string
+	Cursor   *int
+	OnChange func(string) // optional callback when value changes
+}
+
+// NewTextHandler creates a TextHandler bound to the given value and cursor.
+func NewTextHandler(value *string, cursor *int) *TextHandler {
+	return &TextHandler{Value: value, Cursor: cursor}
+}
+
+// HandleKey processes a key for text editing. Returns true if handled.
+func (t *TextHandler) HandleKey(k Key) bool {
+	if t.Value == nil || t.Cursor == nil {
+		return false
+	}
+
+	v := *t.Value
+	c := *t.Cursor
+
+	// Clamp cursor to valid range
+	if c < 0 {
+		c = 0
+	}
+	if c > len(v) {
+		c = len(v)
+	}
+
+	changed := false
+	switch {
+	// Printable character (no modifiers except shift)
+	case k.Rune != 0 && (k.Mod == ModNone || k.Mod == ModShift):
+		v = v[:c] + string(k.Rune) + v[c:]
+		c++
+		changed = true
+
+	// Space
+	case k.Special == SpecialSpace && k.Mod == ModNone:
+		v = v[:c] + " " + v[c:]
+		c++
+		changed = true
+
+	// Backspace
+	case k.Special == SpecialBackspace:
+		if c > 0 {
+			v = v[:c-1] + v[c:]
+			c--
+			changed = true
+		}
+
+	// Delete
+	case k.Special == SpecialDelete:
+		if c < len(v) {
+			v = v[:c] + v[c+1:]
+			changed = true
+		}
+
+	// Left arrow
+	case k.Special == SpecialLeft && k.Mod == ModNone:
+		if c > 0 {
+			c--
+		}
+
+	// Right arrow
+	case k.Special == SpecialRight && k.Mod == ModNone:
+		if c < len(v) {
+			c++
+		}
+
+	// Home
+	case k.Special == SpecialHome:
+		c = 0
+
+	// End
+	case k.Special == SpecialEnd:
+		c = len(v)
+
+	// Ctrl+A - start of line
+	case k.Rune == 'a' && k.Mod == ModCtrl:
+		c = 0
+
+	// Ctrl+E - end of line
+	case k.Rune == 'e' && k.Mod == ModCtrl:
+		c = len(v)
+
+	// Ctrl+K - kill to end of line
+	case k.Rune == 'k' && k.Mod == ModCtrl:
+		if c < len(v) {
+			v = v[:c]
+			changed = true
+		}
+
+	// Ctrl+U - kill to start of line
+	case k.Rune == 'u' && k.Mod == ModCtrl:
+		if c > 0 {
+			v = v[c:]
+			c = 0
+			changed = true
+		}
+
+	// Ctrl+W - delete word backwards
+	case k.Rune == 'w' && k.Mod == ModCtrl:
+		if c > 0 {
+			// Find start of previous word
+			end := c
+			// Skip trailing spaces
+			for end > 0 && v[end-1] == ' ' {
+				end--
+			}
+			// Skip word chars
+			start := end
+			for start > 0 && v[start-1] != ' ' {
+				start--
+			}
+			if start < c {
+				v = v[:start] + v[c:]
+				c = start
+				changed = true
+			}
+		}
+
+	default:
+		return false // Not handled
+	}
+
+	*t.Value = v
+	*t.Cursor = c
+
+	if changed && t.OnChange != nil {
+		t.OnChange(v)
+	}
+
+	return true
 }
 
 // expandAliases replaces alias references in a pattern with their expansions.
@@ -786,6 +940,14 @@ type Input struct {
 	pending       Handler
 	pendingKeys   []Key
 	pendingRouter *Router // router that owns the pending handler
+
+	// Key interceptor for macro recording
+	keyInterceptor func(Key)
+
+	// Macro recording
+	macroBuffer []Key // keys being recorded
+	recording   bool
+	executing   bool // true during macro execution (prevents recording)
 }
 
 // NewInput creates a new Input with the given root router.
@@ -861,10 +1023,85 @@ func (i *Input) isCountDigit(k Key) bool {
 	return k.Rune >= '0' && k.Rune <= '9'
 }
 
+// SetKeyInterceptor sets a callback that receives every key before dispatch.
+// Used for macro recording. Pass nil to clear.
+func (i *Input) SetKeyInterceptor(fn func(Key)) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.keyInterceptor = fn
+}
+
+// Macro is a recorded sequence of keys.
+type Macro []Key
+
+// StartRecording begins recording keys.
+// All subsequent dispatched keys will be recorded until StopRecording.
+func (i *Input) StartRecording() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.recording = true
+	i.macroBuffer = nil
+}
+
+// StopRecording stops recording and returns the recorded keys.
+// The last key (the stop trigger) is automatically excluded.
+func (i *Input) StopRecording() Macro {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if !i.recording {
+		return nil
+	}
+	i.recording = false
+	// Exclude the last key (the stop trigger)
+	if len(i.macroBuffer) > 0 {
+		i.macroBuffer = i.macroBuffer[:len(i.macroBuffer)-1]
+	}
+	macro := i.macroBuffer
+	i.macroBuffer = nil
+	return macro
+}
+
+// IsRecording returns true if currently recording.
+func (i *Input) IsRecording() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.recording
+}
+
+// ExecuteMacro dispatches all keys in the macro.
+// Keys dispatched during execution are not recorded (prevents nested recording).
+func (i *Input) ExecuteMacro(macro Macro) {
+	i.mu.Lock()
+	i.executing = true
+	i.mu.Unlock()
+
+	for _, key := range macro {
+		i.Dispatch(key)
+	}
+
+	i.mu.Lock()
+	i.executing = false
+	i.mu.Unlock()
+}
+
 // Dispatch processes a key through the current router.
 // Returns true if the key was handled.
 func (i *Input) Dispatch(key Key) bool {
 	i.mu.Lock()
+
+	// Call interceptor first
+	if i.keyInterceptor != nil {
+		fn := i.keyInterceptor
+		i.mu.Unlock()
+		fn(key)
+		i.mu.Lock()
+	}
+
+	// Record key if recording (but not during macro execution)
+	if i.recording && !i.executing {
+		i.macroBuffer = append(i.macroBuffer, key)
+	}
+
 	defer i.mu.Unlock()
 
 	if len(i.stack) == 0 {
@@ -900,6 +1137,13 @@ func (i *Input) Dispatch(key Key) bool {
 	if wasPending && consumed < len(i.buffer) && !partial {
 		i.buffer = nil
 		i.countBuffer = ""
+		// Try unmatched handler for the new key
+		if router.unmatched != nil {
+			i.mu.Unlock()
+			handled := router.unmatched(key)
+			i.mu.Lock()
+			return handled
+		}
 		return false
 	}
 
@@ -950,9 +1194,17 @@ func (i *Input) Dispatch(key Key) bool {
 		return true
 	}
 
-	// No match at all - clear buffer
+	// No match at all - try unmatched handler
 	i.buffer = nil
 	i.countBuffer = ""
+
+	if router.unmatched != nil {
+		i.mu.Unlock()
+		handled := router.unmatched(key)
+		i.mu.Lock()
+		return handled
+	}
+
 	return false
 }
 

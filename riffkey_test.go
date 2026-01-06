@@ -2303,3 +2303,415 @@ func TestHandleMsgNilReturn(t *testing.T) {
 		t.Error("Send should not be called when handler returns nil")
 	}
 }
+
+func TestTextHandler(t *testing.T) {
+	t.Run("insert characters", func(t *testing.T) {
+		value := ""
+		cursor := 0
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Rune: 'h'})
+		th.HandleKey(Key{Rune: 'e'})
+		th.HandleKey(Key{Rune: 'l'})
+		th.HandleKey(Key{Rune: 'l'})
+		th.HandleKey(Key{Rune: 'o'})
+
+		if value != "hello" {
+			t.Errorf("expected 'hello', got %q", value)
+		}
+		if cursor != 5 {
+			t.Errorf("expected cursor 5, got %d", cursor)
+		}
+	})
+
+	t.Run("backspace", func(t *testing.T) {
+		value := "hello"
+		cursor := 5
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Special: SpecialBackspace})
+		th.HandleKey(Key{Special: SpecialBackspace})
+
+		if value != "hel" {
+			t.Errorf("expected 'hel', got %q", value)
+		}
+		if cursor != 3 {
+			t.Errorf("expected cursor 3, got %d", cursor)
+		}
+	})
+
+	t.Run("cursor movement", func(t *testing.T) {
+		value := "hello"
+		cursor := 5
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Special: SpecialLeft})
+		th.HandleKey(Key{Special: SpecialLeft})
+		if cursor != 3 {
+			t.Errorf("after left left: expected cursor 3, got %d", cursor)
+		}
+
+		th.HandleKey(Key{Special: SpecialHome})
+		if cursor != 0 {
+			t.Errorf("after home: expected cursor 0, got %d", cursor)
+		}
+
+		th.HandleKey(Key{Special: SpecialEnd})
+		if cursor != 5 {
+			t.Errorf("after end: expected cursor 5, got %d", cursor)
+		}
+	})
+
+	t.Run("insert in middle", func(t *testing.T) {
+		value := "hllo"
+		cursor := 1
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Rune: 'e'})
+
+		if value != "hello" {
+			t.Errorf("expected 'hello', got %q", value)
+		}
+		if cursor != 2 {
+			t.Errorf("expected cursor 2, got %d", cursor)
+		}
+	})
+
+	t.Run("ctrl+k kill to end", func(t *testing.T) {
+		value := "hello world"
+		cursor := 5
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Rune: 'k', Mod: ModCtrl})
+
+		if value != "hello" {
+			t.Errorf("expected 'hello', got %q", value)
+		}
+	})
+
+	t.Run("ctrl+u kill to start", func(t *testing.T) {
+		value := "hello world"
+		cursor := 6
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Rune: 'u', Mod: ModCtrl})
+
+		if value != "world" {
+			t.Errorf("expected 'world', got %q", value)
+		}
+		if cursor != 0 {
+			t.Errorf("expected cursor 0, got %d", cursor)
+		}
+	})
+
+	t.Run("ctrl+w delete word", func(t *testing.T) {
+		value := "hello world"
+		cursor := 11
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Rune: 'w', Mod: ModCtrl})
+
+		if value != "hello " {
+			t.Errorf("expected 'hello ', got %q", value)
+		}
+	})
+
+	t.Run("space via Special", func(t *testing.T) {
+		value := "hello"
+		cursor := 5
+		th := NewTextHandler(&value, &cursor)
+
+		th.HandleKey(Key{Special: SpecialSpace})
+
+		if value != "hello " {
+			t.Errorf("expected 'hello ', got %q", value)
+		}
+	})
+}
+
+func TestTextInput(t *testing.T) {
+	t.Run("router with TextInput", func(t *testing.T) {
+		value := ""
+		cursor := 0
+
+		router := NewRouter().TextInput(&value, &cursor)
+
+		input := NewInput(router)
+
+		// Type some text
+		input.Dispatch(Key{Rune: 'h'})
+		input.Dispatch(Key{Rune: 'i'})
+		input.Dispatch(Key{Special: SpecialSpace})
+		input.Dispatch(Key{Rune: 't'})
+		input.Dispatch(Key{Rune: 'h'})
+		input.Dispatch(Key{Rune: 'e'})
+		input.Dispatch(Key{Rune: 'r'})
+		input.Dispatch(Key{Rune: 'e'})
+
+		if value != "hi there" {
+			t.Errorf("expected 'hi there', got %q", value)
+		}
+
+		// Esc should still be handled by the router
+		_ = router
+		input.Dispatch(Key{Special: SpecialEscape})
+		// Note: the escape won't call our second handler since we registered it after
+		// But it should not insert into the text
+		if value != "hi there" {
+			t.Errorf("esc should not insert, got %q", value)
+		}
+	})
+
+	t.Run("pattern takes priority over unmatched", func(t *testing.T) {
+		value := ""
+		cursor := 0
+
+		router := NewRouter().TextInput(&value, &cursor)
+
+		// Bind 'x' as a command
+		var xCalled bool
+		router.Handle("x", func(m Match) {
+			xCalled = true
+		})
+
+		input := NewInput(router)
+		input.Dispatch(Key{Rune: 'a'}) // Should insert
+		input.Dispatch(Key{Rune: 'x'}) // Should trigger handler, not insert
+
+		if value != "a" {
+			t.Errorf("expected 'a', got %q", value)
+		}
+		if !xCalled {
+			t.Error("x handler should have been called")
+		}
+	})
+}
+
+func TestHandleUnmatched(t *testing.T) {
+	t.Run("unmatched handler receives unhandled keys", func(t *testing.T) {
+		router := NewRouter()
+		router.Handle("j", func(m Match) {})
+
+		var unmatchedKeys []Key
+		router.HandleUnmatched(func(k Key) bool {
+			unmatchedKeys = append(unmatchedKeys, k)
+			return true
+		})
+
+		input := NewInput(router)
+		input.Dispatch(Key{Rune: 'j'}) // Matched
+		input.Dispatch(Key{Rune: 'k'}) // Unmatched
+		input.Dispatch(Key{Rune: 'l'}) // Unmatched
+
+		if len(unmatchedKeys) != 2 {
+			t.Errorf("expected 2 unmatched keys, got %d", len(unmatchedKeys))
+		}
+		if len(unmatchedKeys) >= 2 && unmatchedKeys[0].Rune != 'k' {
+			t.Errorf("expected first unmatched key 'k', got %q", unmatchedKeys[0].Rune)
+		}
+	})
+}
+
+func TestMacroRecording(t *testing.T) {
+	t.Run("basic recording", func(t *testing.T) {
+		router := NewRouter()
+		input := NewInput(router)
+
+		// Not recording initially
+		if input.IsRecording() {
+			t.Error("should not be recording initially")
+		}
+
+		// Start recording
+		input.StartRecording()
+		if !input.IsRecording() {
+			t.Error("should be recording after StartRecording")
+		}
+
+		// Dispatch some keys
+		input.Dispatch(Key{Rune: 'j'})
+		input.Dispatch(Key{Rune: 'j'})
+		input.Dispatch(Key{Rune: 'k'})
+		input.Dispatch(Key{Rune: 'q'}) // The "stop" key
+
+		// Stop recording
+		macro := input.StopRecording()
+
+		if input.IsRecording() {
+			t.Error("should not be recording after StopRecording")
+		}
+
+		// Should have 3 keys (last one auto-excluded)
+		if len(macro) != 3 {
+			t.Errorf("expected 3 keys in macro, got %d", len(macro))
+		}
+
+		if len(macro) >= 3 {
+			if macro[0].Rune != 'j' || macro[1].Rune != 'j' || macro[2].Rune != 'k' {
+				t.Errorf("unexpected macro content: %v", macro)
+			}
+		}
+	})
+
+	t.Run("stop without recording returns nil", func(t *testing.T) {
+		router := NewRouter()
+		input := NewInput(router)
+
+		macro := input.StopRecording()
+		if macro != nil {
+			t.Errorf("expected nil macro when not recording, got %v", macro)
+		}
+	})
+
+	t.Run("empty recording", func(t *testing.T) {
+		router := NewRouter()
+		input := NewInput(router)
+
+		input.StartRecording()
+		input.Dispatch(Key{Rune: 'q'}) // Only the stop key
+		macro := input.StopRecording()
+
+		if len(macro) != 0 {
+			t.Errorf("expected empty macro, got %d keys", len(macro))
+		}
+	})
+}
+
+func TestMacroExecution(t *testing.T) {
+	t.Run("execute macro dispatches keys", func(t *testing.T) {
+		router := NewRouter()
+		var executed []rune
+		router.HandleUnmatched(func(k Key) bool {
+			executed = append(executed, k.Rune)
+			return true
+		})
+		input := NewInput(router)
+
+		macro := Macro{
+			{Rune: 'a'},
+			{Rune: 'b'},
+			{Rune: 'c'},
+		}
+
+		input.ExecuteMacro(macro)
+
+		if len(executed) != 3 {
+			t.Errorf("expected 3 keys executed, got %d", len(executed))
+		}
+		if len(executed) >= 3 && (executed[0] != 'a' || executed[1] != 'b' || executed[2] != 'c') {
+			t.Errorf("unexpected execution order: %v", executed)
+		}
+	})
+
+	t.Run("execute empty macro does nothing", func(t *testing.T) {
+		router := NewRouter()
+		var executed []rune
+		router.HandleUnmatched(func(k Key) bool {
+			executed = append(executed, k.Rune)
+			return true
+		})
+		input := NewInput(router)
+
+		input.ExecuteMacro(nil)
+		input.ExecuteMacro(Macro{})
+
+		if len(executed) != 0 {
+			t.Errorf("expected no keys executed, got %d", len(executed))
+		}
+	})
+}
+
+func TestMacroRoundTrip(t *testing.T) {
+	t.Run("record and playback", func(t *testing.T) {
+		router := NewRouter()
+		var calls int
+		router.Handle("j", func(m Match) { calls++ })
+		input := NewInput(router)
+
+		// Record jjj then stop
+		input.StartRecording()
+		input.Dispatch(Key{Rune: 'j'})
+		input.Dispatch(Key{Rune: 'j'})
+		input.Dispatch(Key{Rune: 'j'})
+		input.Dispatch(Key{Rune: 'q'}) // Stop trigger
+		macro := input.StopRecording()
+
+		// Should have called j handler 3 times during recording
+		if calls != 3 {
+			t.Errorf("expected 3 calls during recording, got %d", calls)
+		}
+
+		// Reset and playback
+		calls = 0
+		input.ExecuteMacro(macro)
+
+		// Should call j handler 3 more times
+		if calls != 3 {
+			t.Errorf("expected 3 calls during playback, got %d", calls)
+		}
+	})
+
+	t.Run("macro with modifiers", func(t *testing.T) {
+		router := NewRouter()
+		var keys []Key
+		router.HandleUnmatched(func(k Key) bool {
+			keys = append(keys, k)
+			return true
+		})
+		input := NewInput(router)
+
+		// Record keys with modifiers
+		input.StartRecording()
+		input.Dispatch(Key{Rune: 'a', Mod: ModCtrl})
+		input.Dispatch(Key{Special: SpecialUp})
+		input.Dispatch(Key{Rune: 'q'})
+		macro := input.StopRecording()
+
+		if len(macro) != 2 {
+			t.Errorf("expected 2 keys, got %d", len(macro))
+		}
+
+		// Playback
+		keys = nil
+		input.ExecuteMacro(macro)
+
+		if len(keys) != 2 {
+			t.Errorf("expected 2 keys played back, got %d", len(keys))
+		}
+		if len(keys) >= 2 {
+			if keys[0].Rune != 'a' || keys[0].Mod != ModCtrl {
+				t.Errorf("first key mismatch: %v", keys[0])
+			}
+			if keys[1].Special != SpecialUp {
+				t.Errorf("second key mismatch: %v", keys[1])
+			}
+		}
+	})
+}
+
+func TestMacroDoesNotRecordDuringPlayback(t *testing.T) {
+	router := NewRouter()
+	input := NewInput(router)
+
+	// Record a macro
+	input.StartRecording()
+	input.Dispatch(Key{Rune: 'a'})
+	input.Dispatch(Key{Rune: 'q'})
+	macro := input.StopRecording()
+
+	// Start a new recording, then execute the macro during it
+	input.StartRecording()
+	input.Dispatch(Key{Rune: 'x'}) // This should be recorded
+	input.ExecuteMacro(macro)      // Keys from this should NOT be recorded
+	input.Dispatch(Key{Rune: 'y'}) // This should be recorded
+	input.Dispatch(Key{Rune: 'q'})
+	newMacro := input.StopRecording()
+
+	// newMacro should only have x, y (not the 'a' from playback)
+	if len(newMacro) != 2 {
+		t.Errorf("expected 2 keys (x, y), got %d: %v", len(newMacro), newMacro)
+	}
+	if len(newMacro) >= 2 && (newMacro[0].Rune != 'x' || newMacro[1].Rune != 'y') {
+		t.Errorf("unexpected keys: %v", newMacro)
+	}
+}
