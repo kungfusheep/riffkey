@@ -169,6 +169,50 @@ input.Push(insertRouter)
 input.Pop()
 ```
 
+## Macros
+
+Record and playback key sequences:
+
+```go
+input := riffkey.NewInput(router)
+
+// Start recording
+input.StartRecording()
+
+// ... keys dispatched here are captured ...
+
+// Stop and get the macro (last key auto-excluded)
+macro := input.StopRecording()
+
+// Play it back
+input.ExecuteMacro(macro)
+
+// Check recording state (for UI feedback)
+if input.IsRecording() {
+    statusLine = "Recording..."
+}
+```
+
+riffkey handles the mechanics - your app manages storage:
+
+```go
+var savedMacro riffkey.Macro
+
+router.Handle("q", func(m riffkey.Match) {
+    if input.IsRecording() {
+        savedMacro = input.StopRecording()
+    } else {
+        input.StartRecording()
+    }
+})
+
+router.Handle("@", func(m riffkey.Match) {
+    input.ExecuteMacro(savedMacro)
+})
+```
+
+Keys dispatched during `ExecuteMacro` are not recorded, preventing nested recording loops.
+
 ## Ambiguous Sequences
 
 When patterns overlap (e.g., `g` and `gg`), the router waits for the timeout before firing the shorter match:
