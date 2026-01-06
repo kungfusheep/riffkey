@@ -1,6 +1,18 @@
 # riffkey
 
-Terminal key input router with vim-style pattern matching and shared configuration.
+Terminal key input router for Go with vim-esque pattern matching and shared configuration.
+
+## Features
+
+- Handler pattern with sequences (`gg`, `<C-w>j`, `<Leader>f`)
+- Count prefixes (`5j` → `m.Count = 5`)
+- Push/pop router mechanics for easy modal input
+- Macro recording and playback
+- Named bindings with runtime rebinding
+- Custom aliases e.g. `<Leader>`
+- Timeout-based disambiguation for overlapping patterns
+- Optional shared config via `~/.config/riffkey.toml`
+- Easy Bubble Tea helpers
 
 ## Usage
 
