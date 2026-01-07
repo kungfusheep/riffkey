@@ -7,6 +7,8 @@ Terminal key input router for Go with vim-esque pattern matching and shared conf
 - Handler pattern with sequences (`gg`, `<C-w>j`, `<Leader>f`)
 - Count prefixes (`5j` → `m.Count = 5`)
 - Push/pop router mechanics for easy modal input
+- Middleware callbacks (before/after handlers)
+- Router cloning for mode-specific behavior
 - Macro recording and playback
 - Named bindings with runtime rebinding
 - Custom aliases e.g. `<Leader>`
@@ -180,6 +182,45 @@ input.Push(insertRouter)
 // Back to normal mode
 input.Pop()
 ```
+
+## Middleware
+
+Add callbacks that run before or after every matched handler:
+
+```go
+// Clone with middleware (creates new router sharing handlers)
+visualRouter := normalRouter.Clone().WithAfter(func() {
+    refreshSelection()
+})
+
+// Or add middleware in-place to existing router
+router.AddAfter(func() {
+    updateDisplay()
+    updateCursor()
+})
+```
+
+This is useful for mode-specific behavior. For example, in a vim-like editor:
+- Normal mode handlers update the display after each command
+- Visual mode handlers refresh selection highlighting instead
+
+```go
+// Normal mode - display updates after each handler
+normalRouter.AddAfter(func() {
+    ed.updateDisplay()
+    ed.updateCursor()
+})
+
+// Visual mode - clone handlers, different post-processing
+visualRouter := normalRouter.Clone().WithAfter(func() {
+    ed.refreshSelection()
+})
+```
+
+Methods:
+- `Clone()` - shallow copy sharing handlers, fresh middleware
+- `WithBefore(fn)` / `WithAfter(fn)` - clone with middleware added
+- `AddBefore(fn)` / `AddAfter(fn)` - add middleware in-place
 
 ## Macros
 

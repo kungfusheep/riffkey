@@ -225,6 +225,11 @@ type Router struct {
 	namedBindings      map[string]*namedBinding
 	bindingOrder       []string // preserve registration order for Bindings()
 	unmatched          func(Key) bool // fallback for unmatched keys
+	noCounts           bool // if true, digits are not treated as count prefixes
+
+	// Middleware callbacks
+	before []func() // called before each handler
+	after  []func() // called after each handler
 
 	// Send is called with the return value of MsgHandler functions.
 	// Set this to integrate with frameworks like Bubble Tea.
@@ -300,6 +305,64 @@ func (r *Router) Name(name string) *Router {
 // GetName returns the router's name.
 func (r *Router) GetName() string {
 	return r.name
+}
+
+// Clone creates a shallow copy of the router that shares the same handlers
+// but can have independent middleware. This is useful for creating variants
+// of a router with different before/after hooks.
+func (r *Router) Clone() *Router {
+	clone := &Router{
+		root:               r.root, // share the trie
+		timeout:            r.timeout,
+		name:               r.name,
+		hasEscapeSequences: r.hasEscapeSequences,
+		aliases:            r.aliases,
+		namedBindings:      r.namedBindings,
+		bindingOrder:       r.bindingOrder,
+		unmatched:          r.unmatched,
+		noCounts:           r.noCounts,
+		Send:               r.Send,
+		// Don't copy middleware - let the clone start fresh
+	}
+	return clone
+}
+
+// WithBefore returns a clone of the router with a before-handler callback added.
+// The callback runs before each matched handler. Multiple callbacks run in order.
+//
+// Example:
+//
+//	oneShot := router.Clone().WithAfter(func() { app.Pop() })
+func (r *Router) WithBefore(fn func()) *Router {
+	clone := r.Clone()
+	clone.before = append(clone.before, fn)
+	return clone
+}
+
+// WithAfter returns a clone of the router with an after-handler callback added.
+// The callback runs after each matched handler. Multiple callbacks run in order.
+//
+// Example:
+//
+//	visualRouter := normalRouter.Clone().WithAfter(func() { ed.refresh() })
+func (r *Router) WithAfter(fn func()) *Router {
+	clone := r.Clone()
+	clone.after = append(clone.after, fn)
+	return clone
+}
+
+// AddBefore adds a before-handler callback to this router (modifies in-place).
+// Use this when you need to add middleware after handlers are registered.
+func (r *Router) AddBefore(fn func()) *Router {
+	r.before = append(r.before, fn)
+	return r
+}
+
+// AddAfter adds an after-handler callback to this router (modifies in-place).
+// Use this when you need to add middleware after handlers are registered.
+func (r *Router) AddAfter(fn func()) *Router {
+	r.after = append(r.after, fn)
+	return r
 }
 
 // SetAlias defines a pattern alias that expands in Handle patterns.
@@ -832,6 +895,13 @@ func escapeTomlString(s string) string {
 	return sb.String()
 }
 
+// NoCounts disables count prefix handling for this router.
+// Use for command lines, search input, or any text entry context.
+func (r *Router) NoCounts() *Router {
+	r.noCounts = true
+	return r
+}
+
 // match attempts to match a sequence of keys.
 func (r *Router) match(keys []Key) (handler Handler, consumed int, partial bool) {
 	node := r.root
@@ -1110,8 +1180,8 @@ func (i *Input) Dispatch(key Key) bool {
 
 	router := i.stack[len(i.stack)-1]
 
-	// Check if this is a count digit
-	if i.isCountDigit(key) && len(i.buffer) == 0 {
+	// Check if this is a count digit (but not if counts are disabled)
+	if i.isCountDigit(key) && len(i.buffer) == 0 && !router.noCounts {
 		// Accumulate count prefix
 		i.countBuffer += string(key.Rune)
 		return true
@@ -1156,7 +1226,13 @@ func (i *Input) Dispatch(key Key) bool {
 		i.countBuffer = ""
 
 		i.mu.Unlock()
+		for _, fn := range router.before {
+			fn()
+		}
 		handler(Match{Keys: matchedKeys, Count: count})
+		for _, fn := range router.after {
+			fn()
+		}
 		i.mu.Lock()
 		return true
 	}
@@ -1175,13 +1251,20 @@ func (i *Input) Dispatch(key Key) bool {
 			if i.pending != nil && len(i.stack) > 0 && i.stack[len(i.stack)-1] == i.pendingRouter {
 				h := i.pending
 				keys := i.pendingKeys
+				r := i.pendingRouter
 				i.pending = nil
 				i.pendingKeys = nil
 				i.pendingRouter = nil
 				i.buffer = i.buffer[len(keys):]
 				i.countBuffer = ""
 				i.mu.Unlock()
+				for _, fn := range r.before {
+					fn()
+				}
 				h(Match{Keys: keys, Count: pendingCount})
+				for _, fn := range r.after {
+					fn()
+				}
 				return
 			}
 			i.mu.Unlock()

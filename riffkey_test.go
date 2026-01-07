@@ -2715,3 +2715,82 @@ func TestMacroDoesNotRecordDuringPlayback(t *testing.T) {
 		t.Errorf("unexpected keys: %v", newMacro)
 	}
 }
+
+func TestMiddleware(t *testing.T) {
+	t.Run("WithAfter callback runs after handler", func(t *testing.T) {
+		var order []string
+		
+		router := NewRouter()
+		router.Handle("j", func(_ Match) {
+			order = append(order, "handler")
+		})
+		
+		// Clone with after middleware
+		withAfter := router.Clone().WithAfter(func() {
+			order = append(order, "after")
+		})
+		
+		input := NewInput(withAfter)
+		input.Dispatch(Key{Rune: 'j'})
+		
+		if len(order) != 2 {
+			t.Fatalf("expected 2 calls, got %d: %v", len(order), order)
+		}
+		if order[0] != "handler" || order[1] != "after" {
+			t.Errorf("wrong order: %v", order)
+		}
+	})
+	
+	t.Run("WithBefore callback runs before handler", func(t *testing.T) {
+		var order []string
+		
+		router := NewRouter()
+		router.Handle("j", func(_ Match) {
+			order = append(order, "handler")
+		})
+		
+		// Clone with before middleware
+		withBefore := router.Clone().WithBefore(func() {
+			order = append(order, "before")
+		})
+		
+		input := NewInput(withBefore)
+		input.Dispatch(Key{Rune: 'j'})
+		
+		if len(order) != 2 {
+			t.Fatalf("expected 2 calls, got %d: %v", len(order), order)
+		}
+		if order[0] != "before" || order[1] != "handler" {
+			t.Errorf("wrong order: %v", order)
+		}
+	})
+	
+	t.Run("Clone shares handlers but not middleware", func(t *testing.T) {
+		var originalCalls, cloneCalls int
+		
+		router := NewRouter()
+		router.Handle("j", func(_ Match) {
+			// Both should call this
+		})
+		
+		// Original with after
+		original := router.Clone().WithAfter(func() {
+			originalCalls++
+		})
+		
+		// Clone without middleware
+		clone := router.Clone().WithAfter(func() {
+			cloneCalls++
+		})
+		
+		inputOrig := NewInput(original)
+		inputClone := NewInput(clone)
+		
+		inputOrig.Dispatch(Key{Rune: 'j'})
+		inputClone.Dispatch(Key{Rune: 'j'})
+		
+		if originalCalls != 1 || cloneCalls != 1 {
+			t.Errorf("originalCalls=%d, cloneCalls=%d, want 1 each", originalCalls, cloneCalls)
+		}
+	})
+}
