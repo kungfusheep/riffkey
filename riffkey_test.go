@@ -2716,23 +2716,23 @@ func TestMacroDoesNotRecordDuringPlayback(t *testing.T) {
 	}
 }
 
-func TestMiddleware(t *testing.T) {
-	t.Run("WithAfter callback runs after handler", func(t *testing.T) {
+func TestHooks(t *testing.T) {
+	t.Run("OnAfter hook runs after handler", func(t *testing.T) {
 		var order []string
-		
+
 		router := NewRouter()
 		router.Handle("j", func(_ Match) {
 			order = append(order, "handler")
 		})
-		
-		// Clone with after middleware
-		withAfter := router.Clone().WithAfter(func() {
+
+		// Clone with after hook
+		withAfter := router.Clone().OnAfter(func() {
 			order = append(order, "after")
 		})
-		
+
 		input := NewInput(withAfter)
 		input.Dispatch(Key{Rune: 'j'})
-		
+
 		if len(order) != 2 {
 			t.Fatalf("expected 2 calls, got %d: %v", len(order), order)
 		}
@@ -2740,23 +2740,23 @@ func TestMiddleware(t *testing.T) {
 			t.Errorf("wrong order: %v", order)
 		}
 	})
-	
-	t.Run("WithBefore callback runs before handler", func(t *testing.T) {
+
+	t.Run("OnBefore hook runs before handler", func(t *testing.T) {
 		var order []string
-		
+
 		router := NewRouter()
 		router.Handle("j", func(_ Match) {
 			order = append(order, "handler")
 		})
-		
-		// Clone with before middleware
-		withBefore := router.Clone().WithBefore(func() {
+
+		// Clone with before hook
+		withBefore := router.Clone().OnBefore(func() {
 			order = append(order, "before")
 		})
-		
+
 		input := NewInput(withBefore)
 		input.Dispatch(Key{Rune: 'j'})
-		
+
 		if len(order) != 2 {
 			t.Fatalf("expected 2 calls, got %d: %v", len(order), order)
 		}
@@ -2764,22 +2764,22 @@ func TestMiddleware(t *testing.T) {
 			t.Errorf("wrong order: %v", order)
 		}
 	})
-	
-	t.Run("Clone shares handlers but not middleware", func(t *testing.T) {
+
+	t.Run("Clone shares handlers but not hooks", func(t *testing.T) {
 		var originalCalls, cloneCalls int
-		
+
 		router := NewRouter()
 		router.Handle("j", func(_ Match) {
 			// Both should call this
 		})
-		
-		// Original with after
-		original := router.Clone().WithAfter(func() {
+
+		// Original with after hook
+		original := router.Clone().OnAfter(func() {
 			originalCalls++
 		})
-		
-		// Clone without middleware
-		clone := router.Clone().WithAfter(func() {
+
+		// Clone with different hook
+		clone := router.Clone().OnAfter(func() {
 			cloneCalls++
 		})
 		
