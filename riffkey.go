@@ -86,11 +86,30 @@ func (s Special) String() string {
 	return "Unknown"
 }
 
+// Bracketed paste mode escape sequences.
+// Terminals wrap pasted content with these sequences to distinguish paste from typed input.
+const (
+	BracketedPasteEnable  = "\x1b[?2004h" // send to terminal to enable bracketed paste
+	BracketedPasteDisable = "\x1b[?2004l" // send to terminal to disable bracketed paste
+)
+
+// internal markers for paste sequence detection
+var (
+	pasteStartSeq = []byte{27, '[', '2', '0', '0', '~'} // ESC [ 200 ~
+	pasteEndSeq   = []byte{27, '[', '2', '0', '1', '~'} // ESC [ 201 ~
+)
+
 // Key represents a single keypress with optional modifiers.
 type Key struct {
 	Rune    rune
 	Mod     Modifier
 	Special Special
+	Paste   string // non-empty if this is a bracketed paste event
+}
+
+// IsPaste returns true if this Key represents a bracketed paste event.
+func (k Key) IsPaste() bool {
+	return k.Paste != ""
 }
 
 // String returns a vim-style representation of the key.
@@ -1382,8 +1401,8 @@ type readResult struct {
 func NewReader(r io.Reader) *Reader {
 	return &Reader{
 		r:                    r,
-		buf:                  make([]byte, 64),
-		tmp:                  make([]byte, 32),
+		buf:                  make([]byte, 4096),
+		tmp:                  make([]byte, 4096),
 		timeout:              50 * time.Millisecond,
 		readCh:               make(chan readResult, 1),
 		parseEscapeSequences: true, // Default to parsing escape sequences
@@ -1406,6 +1425,8 @@ func (r *Reader) SetParseEscapeSequences(parse bool) *Reader {
 
 // ReadKey reads the next key from the underlying reader.
 // It handles escape sequences for special keys (arrows, function keys, etc.).
+// If bracketed paste mode is enabled in the terminal, pasted content is returned
+// as a single Key with the Paste field populated.
 func (r *Reader) ReadKey() (Key, error) {
 	// Ensure we have at least one byte
 	if err := r.ensureBytes(1); err != nil {
@@ -1452,6 +1473,16 @@ func (r *Reader) ReadKey() (Key, error) {
 						break
 					}
 				}
+
+				// Check for bracketed paste start: ESC [ 200 ~
+				if seqEnd-r.pos >= 4 {
+					csiContent := r.buf[r.pos+1 : seqEnd] // content after '[' including terminator
+					if len(csiContent) == 4 && csiContent[0] == '2' && csiContent[1] == '0' && csiContent[2] == '0' && csiContent[3] == '~' {
+						r.pos = seqEnd
+						return r.readPasteContent()
+					}
+				}
+
 				seq := make([]byte, seqEnd-r.pos+1)
 				seq[0] = 27
 				copy(seq[1:], r.buf[r.pos:seqEnd])
@@ -1471,6 +1502,50 @@ func (r *Reader) ReadKey() (Key, error) {
 	}
 
 	return r.parseSingleByte(b), nil
+}
+
+// readPasteContent reads until the paste end sequence (ESC [ 201 ~) is found.
+// Returns a Key with Paste field containing all pasted content.
+func (r *Reader) readPasteContent() (Key, error) {
+	var content []byte
+
+	for {
+		if err := r.ensureBytes(1); err != nil {
+			// Return what we have if we hit EOF
+			return Key{Paste: string(content)}, err
+		}
+
+		b := r.buf[r.pos]
+
+		// Check for potential paste end sequence
+		if b == 27 {
+			// Must get all 6 bytes to properly check for paste end
+			// Keep trying until we have enough bytes
+			for r.end-r.pos < 6 {
+				if err := r.ensureBytes(6); err != nil {
+					// EOF in middle of potential sequence - return what we have
+					return Key{Paste: string(content)}, err
+				}
+				// ensureBytes might not get all 6 if data arrives slowly,
+				// but it will block on Read() waiting for more data
+			}
+
+			if r.buf[r.pos] == 27 &&
+				r.buf[r.pos+1] == '[' &&
+				r.buf[r.pos+2] == '2' &&
+				r.buf[r.pos+3] == '0' &&
+				r.buf[r.pos+4] == '1' &&
+				r.buf[r.pos+5] == '~' {
+				// Found paste end sequence, consume it and return
+				r.pos += 6
+				return Key{Paste: string(content)}, nil
+			}
+		}
+
+		// Not paste end, add to content
+		content = append(content, b)
+		r.pos++
+	}
 }
 
 // ensureBytesWithTimeout is like ensureBytes but uses a timeout for TTY input.

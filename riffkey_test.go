@@ -2794,3 +2794,156 @@ func TestHooks(t *testing.T) {
 		}
 	})
 }
+
+func TestBracketedPaste(t *testing.T) {
+	t.Run("simple paste", func(t *testing.T) {
+		// ESC [ 200 ~ <content> ESC [ 201 ~
+		input := append([]byte{}, 0x1b, '[', '2', '0', '0', '~')
+		input = append(input, []byte("hello world")...)
+		input = append(input, 0x1b, '[', '2', '0', '1', '~')
+
+		r := NewReader(bytes.NewReader(input))
+		key, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("ReadKey() error = %v", err)
+		}
+
+		if !key.IsPaste() {
+			t.Error("expected IsPaste() to be true")
+		}
+		if key.Paste != "hello world" {
+			t.Errorf("expected Paste='hello world', got %q", key.Paste)
+		}
+	})
+
+	t.Run("multiline paste", func(t *testing.T) {
+		content := "line one\nline two\nline three"
+		input := append([]byte{}, 0x1b, '[', '2', '0', '0', '~')
+		input = append(input, []byte(content)...)
+		input = append(input, 0x1b, '[', '2', '0', '1', '~')
+
+		r := NewReader(bytes.NewReader(input))
+		key, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("ReadKey() error = %v", err)
+		}
+
+		if key.Paste != content {
+			t.Errorf("expected multiline paste, got %q", key.Paste)
+		}
+	})
+
+	t.Run("paste with special characters", func(t *testing.T) {
+		content := "code: func() { return 42 }"
+		input := append([]byte{}, 0x1b, '[', '2', '0', '0', '~')
+		input = append(input, []byte(content)...)
+		input = append(input, 0x1b, '[', '2', '0', '1', '~')
+
+		r := NewReader(bytes.NewReader(input))
+		key, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("ReadKey() error = %v", err)
+		}
+
+		if key.Paste != content {
+			t.Errorf("expected %q, got %q", content, key.Paste)
+		}
+	})
+
+	t.Run("paste followed by normal key", func(t *testing.T) {
+		input := append([]byte{}, 0x1b, '[', '2', '0', '0', '~')
+		input = append(input, []byte("pasted")...)
+		input = append(input, 0x1b, '[', '2', '0', '1', '~')
+		input = append(input, 'j') // Normal key after paste
+
+		r := NewReader(bytes.NewReader(input))
+
+		// First read: paste
+		key1, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("first ReadKey() error = %v", err)
+		}
+		if !key1.IsPaste() || key1.Paste != "pasted" {
+			t.Errorf("expected paste='pasted', got %+v", key1)
+		}
+
+		// Second read: normal key
+		key2, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("second ReadKey() error = %v", err)
+		}
+		if key2.Rune != 'j' {
+			t.Errorf("expected 'j', got %+v", key2)
+		}
+	})
+
+	t.Run("empty paste", func(t *testing.T) {
+		input := append([]byte{}, 0x1b, '[', '2', '0', '0', '~')
+		input = append(input, 0x1b, '[', '2', '0', '1', '~')
+
+		r := NewReader(bytes.NewReader(input))
+		key, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("ReadKey() error = %v", err)
+		}
+
+		// Empty paste has Paste="" so IsPaste() returns false
+		// This is intentional - nothing to paste means no paste content
+		if key.IsPaste() {
+			t.Error("expected IsPaste() to be false for empty paste")
+		}
+		if key.Paste != "" {
+			t.Errorf("expected empty paste string, got %q", key.Paste)
+		}
+		// But we can verify it's not a normal key by checking other fields are empty
+		if key.Rune != 0 || key.Special != SpecialNone || key.Mod != ModNone {
+			t.Errorf("expected empty key fields for empty paste, got %+v", key)
+		}
+	})
+
+	t.Run("paste with escape character in content", func(t *testing.T) {
+		// Paste content that contains an ESC but isn't the end sequence
+		content := "text\x1b[31mcolored"
+		input := append([]byte{}, 0x1b, '[', '2', '0', '0', '~')
+		input = append(input, []byte(content)...)
+		input = append(input, 0x1b, '[', '2', '0', '1', '~')
+
+		r := NewReader(bytes.NewReader(input))
+		key, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("ReadKey() error = %v", err)
+		}
+
+		if key.Paste != content {
+			t.Errorf("expected content with escape, got %q", key.Paste)
+		}
+	})
+}
+
+func TestBracketedPasteConstants(t *testing.T) {
+	// Verify the escape sequences are correct
+	if BracketedPasteEnable != "\x1b[?2004h" {
+		t.Errorf("BracketedPasteEnable = %q, want %q", BracketedPasteEnable, "\x1b[?2004h")
+	}
+	if BracketedPasteDisable != "\x1b[?2004l" {
+		t.Errorf("BracketedPasteDisable = %q, want %q", BracketedPasteDisable, "\x1b[?2004l")
+	}
+}
+
+func TestIsPaste(t *testing.T) {
+	tests := []struct {
+		key  Key
+		want bool
+	}{
+		{Key{Paste: "content"}, true},
+		{Key{Paste: ""}, false},
+		{Key{Rune: 'j'}, false},
+		{Key{Special: SpecialEnter}, false},
+	}
+
+	for _, tt := range tests {
+		if got := tt.key.IsPaste(); got != tt.want {
+			t.Errorf("Key%+v.IsPaste() = %v, want %v", tt.key, got, tt.want)
+		}
+	}
+}
