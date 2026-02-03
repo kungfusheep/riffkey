@@ -1222,13 +1222,13 @@ func TestInputRun(t *testing.T) {
 func TestReaderMixedInput(t *testing.T) {
 	// Mix of regular keys, escape sequences, and control chars
 	input := []byte{
-		'j',                    // regular
-		0x1b, '[', 'A',         // up arrow
-		'k',                    // regular
-		0x1b, '[', '5', '~',    // page up
-		3,                      // ctrl+c
-		0x1b, 'O', 'P',         // F1
-		'G',                    // regular uppercase
+		'j',            // regular
+		0x1b, '[', 'A', // up arrow
+		'k',                 // regular
+		0x1b, '[', '5', '~', // page up
+		3,              // ctrl+c
+		0x1b, 'O', 'P', // F1
+		'G', // regular uppercase
 	}
 
 	expected := []Key{
@@ -1356,9 +1356,9 @@ func TestReaderAllFunctionKeys(t *testing.T) {
 func TestReaderAllModifierCombinations(t *testing.T) {
 	// Terminal modifier encoding: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0)
 	tests := []struct {
-		name     string
-		modNum   byte // modifier number in sequence
-		wantMod  Modifier
+		name    string
+		modNum  byte // modifier number in sequence
+		wantMod Modifier
 	}{
 		{"shift", '2', ModShift},
 		{"alt", '3', ModAlt},
@@ -1512,13 +1512,13 @@ func TestReaderInputRunIntegration(t *testing.T) {
 
 	// Simulate vim-like navigation
 	input := []byte{
-		'g', 'g',               // go to top
-		'5', 'j',               // down 5
-		0x1b, '[', 'A',         // up arrow
-		'1', '0', 'j',          // down 10
-		4,                      // ctrl+d (half page down)
-		0x1b, '[', '6', '~',    // page down
-		'G',                    // go to bottom
+		'g', 'g', // go to top
+		'5', 'j', // down 5
+		0x1b, '[', 'A', // up arrow
+		'1', '0', 'j', // down 10
+		4,                   // ctrl+d (half page down)
+		0x1b, '[', '6', '~', // page down
+		'G', // go to bottom
 	}
 
 	inp := NewInput(router)
@@ -1547,8 +1547,13 @@ func TestHasEscapeSequences(t *testing.T) {
 		},
 		{
 			name:     "only simple keys",
-			patterns: []string{"j", "k", "gg", "G", "<C-d>", "<Esc>", "<Enter>", "<Space>"},
+			patterns: []string{"j", "k", "gg", "G", "<C-d>", "<Enter>", "<Space>"},
 			want:     false,
+		},
+		{
+			name:     "with Esc",
+			patterns: []string{"j", "k", "<Esc>"},
+			want:     true,
 		},
 		{
 			name:     "with arrow key",
@@ -2782,13 +2787,13 @@ func TestHooks(t *testing.T) {
 		clone := router.Clone().OnAfter(func() {
 			cloneCalls++
 		})
-		
+
 		inputOrig := NewInput(original)
 		inputClone := NewInput(clone)
-		
+
 		inputOrig.Dispatch(Key{Rune: 'j'})
 		inputClone.Dispatch(Key{Rune: 'j'})
-		
+
 		if originalCalls != 1 || cloneCalls != 1 {
 			t.Errorf("originalCalls=%d, cloneCalls=%d, want 1 each", originalCalls, cloneCalls)
 		}

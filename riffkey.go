@@ -242,9 +242,9 @@ type Router struct {
 	hasEscapeSequences bool              // true if any registered pattern uses keys that generate escape sequences
 	aliases            map[string]string // user-defined pattern aliases (e.g., "Leader" -> ",")
 	namedBindings      map[string]*namedBinding
-	bindingOrder       []string // preserve registration order for Bindings()
+	bindingOrder       []string       // preserve registration order for Bindings()
 	unmatched          func(Key) bool // fallback for unmatched keys
-	noCounts           bool // if true, digits are not treated as count prefixes
+	noCounts           bool           // if true, digits are not treated as count prefixes
 
 	// Hooks - callbacks that run before/after each matched handler
 	beforeHooks []func()
@@ -295,7 +295,8 @@ func (r *Router) HasEscapeSequences() bool {
 // escape sequence (multi-byte starting with ESC).
 func generatesEscapeSequence(k Key) bool {
 	switch k.Special {
-	case SpecialUp, SpecialDown, SpecialLeft, SpecialRight,
+	case SpecialEscape,
+		SpecialUp, SpecialDown, SpecialLeft, SpecialRight,
 		SpecialHome, SpecialEnd, SpecialPageUp, SpecialPageDown,
 		SpecialInsert, SpecialDelete,
 		SpecialF1, SpecialF2, SpecialF3, SpecialF4, SpecialF5, SpecialF6,
