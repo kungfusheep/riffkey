@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 )
@@ -1390,6 +1391,10 @@ type Reader struct {
 
 	// If false, byte 27 is always Escape (no timeout needed)
 	parseEscapeSequences bool
+
+	// If true, decode multi-byte UTF-8 sequences into single runes.
+	// Default is false (each byte is a separate Key) for backwards compat.
+	utf8Mode bool
 }
 
 type readResult struct {
@@ -1421,6 +1426,14 @@ func (r *Reader) EscapeTimeout(d time.Duration) *Reader {
 // Use router.HasEscapeSequences() to determine if this is needed.
 func (r *Reader) SetParseEscapeSequences(parse bool) *Reader {
 	r.parseEscapeSequences = parse
+	return r
+}
+
+// SetUTF8 configures whether to decode multi-byte UTF-8 sequences.
+// If true, characters like £ (0xC2 0xA3) are decoded into a single Key{Rune: '£'}.
+// If false (default), each byte is returned as a separate Key for backwards compat.
+func (r *Reader) SetUTF8(enabled bool) *Reader {
+	r.utf8Mode = enabled
 	return r
 }
 
@@ -1500,6 +1513,11 @@ func (r *Reader) ReadKey() (Key, error) {
 
 		// Just ESC by itself
 		return Key{Special: SpecialEscape}, nil
+	}
+
+	// UTF-8 multi-byte sequence
+	if r.utf8Mode && b >= 0xC0 {
+		return r.readUTF8Rune(b)
 	}
 
 	return r.parseSingleByte(b), nil
@@ -1710,6 +1728,45 @@ func (r *Reader) parseSingleByte(b byte) Key {
 	default:
 		return Key{Rune: rune(b)}
 	}
+}
+
+// readUTF8Rune reads a multi-byte UTF-8 sequence starting with lead byte b.
+// The lead byte has already been consumed from the buffer.
+func (r *Reader) readUTF8Rune(lead byte) (Key, error) {
+	// determine sequence length from lead byte
+	var seqLen int
+	switch {
+	case lead < 0xE0:
+		seqLen = 2 // 110xxxxx = 2-byte sequence
+	case lead < 0xF0:
+		seqLen = 3 // 1110xxxx = 3-byte sequence
+	default:
+		seqLen = 4 // 11110xxx = 4-byte sequence
+	}
+
+	// need seqLen-1 more bytes (lead already consumed)
+	remaining := seqLen - 1
+	if err := r.ensureBytes(remaining); err != nil {
+		// incomplete sequence, return lead byte as-is
+		return Key{Rune: rune(lead)}, nil
+	}
+
+	// build the full sequence
+	seq := make([]byte, seqLen)
+	seq[0] = lead
+	copy(seq[1:], r.buf[r.pos:r.pos+remaining])
+	r.pos += remaining
+
+	// decode
+	rn, size := utf8.DecodeRune(seq)
+	if rn == utf8.RuneError || size != seqLen {
+		// invalid UTF-8, return lead byte as-is
+		// (remaining bytes stay in buffer, will be processed next)
+		r.pos -= remaining
+		return Key{Rune: rune(lead)}, nil
+	}
+
+	return Key{Rune: rn}, nil
 }
 
 // parseEscapeSequence handles escape sequences (arrows, function keys, etc.).

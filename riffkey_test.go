@@ -2952,3 +2952,71 @@ func TestIsPaste(t *testing.T) {
 		}
 	}
 }
+
+func TestUTF8Mode(t *testing.T) {
+	t.Run("UTF-8 mode decodes multi-byte sequences", func(t *testing.T) {
+		// £ is UTF-8: 0xC2 0xA3
+		input := strings.NewReader("\xC2\xA3")
+		reader := NewReader(input).SetUTF8(true)
+
+		key, err := reader.ReadKey()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key.Rune != '£' {
+			t.Errorf("expected '£' (U+00A3), got %q (U+%04X)", key.Rune, key.Rune)
+		}
+	})
+
+	t.Run("UTF-8 mode decodes 3-byte sequences", func(t *testing.T) {
+		// € is UTF-8: 0xE2 0x82 0xAC
+		input := strings.NewReader("\xE2\x82\xAC")
+		reader := NewReader(input).SetUTF8(true)
+
+		key, err := reader.ReadKey()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key.Rune != '€' {
+			t.Errorf("expected '€' (U+20AC), got %q (U+%04X)", key.Rune, key.Rune)
+		}
+	})
+
+	t.Run("raw mode returns bytes separately", func(t *testing.T) {
+		// £ is UTF-8: 0xC2 0xA3 - without UTF-8 mode, should be two separate keys
+		input := strings.NewReader("\xC2\xA3")
+		reader := NewReader(input) // UTF-8 mode off by default
+
+		key1, err := reader.ReadKey()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		key2, err := reader.ReadKey()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should get two separate byte-as-rune keys
+		if key1.Rune != rune(0xC2) {
+			t.Errorf("expected rune 0xC2, got %q (U+%04X)", key1.Rune, key1.Rune)
+		}
+		if key2.Rune != rune(0xA3) {
+			t.Errorf("expected rune 0xA3, got %q (U+%04X)", key2.Rune, key2.Rune)
+		}
+	})
+
+	t.Run("ASCII characters work in UTF-8 mode", func(t *testing.T) {
+		input := strings.NewReader("abc")
+		reader := NewReader(input).SetUTF8(true)
+
+		for _, expected := range []rune{'a', 'b', 'c'} {
+			key, err := reader.ReadKey()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if key.Rune != expected {
+				t.Errorf("expected %q, got %q", expected, key.Rune)
+			}
+		}
+	})
+}
