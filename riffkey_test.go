@@ -886,7 +886,7 @@ func TestReaderBasicChars(t *testing.T) {
 		{
 			name:  "newline",
 			input: []byte{'\n'},
-			want:  Key{Special: SpecialEnter},
+			want:  Key{Rune: 'j', Mod: ModCtrl},
 		},
 		{
 			name:  "tab",
@@ -1293,9 +1293,8 @@ func TestReaderAllControlChars(t *testing.T) {
 		// Skip special control chars:
 		// 8 = Ctrl+H = Backspace (historical)
 		// 9 = Ctrl+I = Tab
-		// 10 = Ctrl+J = Newline
 		// 13 = Ctrl+M = Carriage Return
-		if i == 8 || i == 9 || i == 10 || i == 13 {
+		if i == 8 || i == 9 || i == 13 {
 			continue
 		}
 
@@ -1604,7 +1603,7 @@ func TestReaderSpecialChars(t *testing.T) {
 		{"space", ' ', Key{Special: SpecialSpace}},
 		{"tab", '\t', Key{Special: SpecialTab}},
 		{"enter_cr", '\r', Key{Special: SpecialEnter}},
-		{"enter_lf", '\n', Key{Special: SpecialEnter}},
+		{"enter_lf", '\n', Key{Rune: 'j', Mod: ModCtrl}},
 		{"backspace_127", 127, Key{Special: SpecialBackspace}},
 		{"backspace_8", 8, Key{Special: SpecialBackspace}},
 		{"ctrl_space", 0, Key{Rune: ' ', Mod: ModCtrl}},
