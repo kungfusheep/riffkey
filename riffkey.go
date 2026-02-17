@@ -1712,7 +1712,7 @@ func (r *Reader) parseSingleByte(b byte) Key {
 	switch {
 	case b == 27:
 		return Key{Special: SpecialEscape}
-	case b == 13 || b == 10:
+	case b == 13:
 		return Key{Special: SpecialEnter}
 	case b == 9:
 		return Key{Special: SpecialTab}
@@ -1721,7 +1721,7 @@ func (r *Reader) parseSingleByte(b byte) Key {
 	case b == 0:
 		return Key{Rune: ' ', Mod: ModCtrl} // Ctrl+Space
 	case b < 27:
-		// Ctrl+A through Ctrl+Z (1-26)
+		// Ctrl+A through Ctrl+Z (1-26), includes Ctrl+j (10)
 		return Key{Rune: rune('a' + b - 1), Mod: ModCtrl}
 	case b == 32:
 		return Key{Special: SpecialSpace}
