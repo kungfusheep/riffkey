@@ -3019,3 +3019,152 @@ func TestUTF8Mode(t *testing.T) {
 		}
 	})
 }
+
+func TestKittyKeyboardConstants(t *testing.T) {
+	if KittyKeyboardEnable != "\x1b[>1u" {
+		t.Errorf("KittyKeyboardEnable = %q, want %q", KittyKeyboardEnable, "\x1b[>1u")
+	}
+	if KittyKeyboardDisable != "\x1b[<u" {
+		t.Errorf("KittyKeyboardDisable = %q, want %q", KittyKeyboardDisable, "\x1b[<u")
+	}
+}
+
+func TestReaderCSIu(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+		want  Key
+	}{
+		// special keys via CSI u
+		{name: "enter", input: []byte{0x1b, '[', '1', '3', 'u'}, want: Key{Special: SpecialEnter}},
+		{name: "tab", input: []byte{0x1b, '[', '9', 'u'}, want: Key{Special: SpecialTab}},
+		{name: "escape", input: []byte{0x1b, '[', '2', '7', 'u'}, want: Key{Special: SpecialEscape}},
+		{name: "backspace", input: []byte{0x1b, '[', '1', '2', '7', 'u'}, want: Key{Special: SpecialBackspace}},
+		{name: "space", input: []byte{0x1b, '[', '3', '2', 'u'}, want: Key{Special: SpecialSpace}},
+
+		// regular letter via CSI u
+		{name: "letter a", input: []byte{0x1b, '[', '9', '7', 'u'}, want: Key{Rune: 'a'}},
+
+		// disambiguated ctrl+letter (the whole point!)
+		{name: "ctrl+m distinct from enter", input: []byte{0x1b, '[', '1', '0', '9', ';', '5', 'u'}, want: Key{Rune: 'm', Mod: ModCtrl}},
+		{name: "ctrl+i distinct from tab", input: []byte{0x1b, '[', '1', '0', '5', ';', '5', 'u'}, want: Key{Rune: 'i', Mod: ModCtrl}},
+		{name: "ctrl+h distinct from backspace", input: []byte{0x1b, '[', '1', '0', '4', ';', '5', 'u'}, want: Key{Rune: 'h', Mod: ModCtrl}},
+		{name: "ctrl+[ distinct from escape", input: []byte{0x1b, '[', '9', '1', ';', '5', 'u'}, want: Key{Rune: '[', Mod: ModCtrl}},
+
+		// modified special keys
+		{name: "shift+enter", input: []byte{0x1b, '[', '1', '3', ';', '2', 'u'}, want: Key{Special: SpecialEnter, Mod: ModShift}},
+		{name: "ctrl+enter", input: []byte{0x1b, '[', '1', '3', ';', '5', 'u'}, want: Key{Special: SpecialEnter, Mod: ModCtrl}},
+		{name: "alt+tab", input: []byte{0x1b, '[', '9', ';', '3', 'u'}, want: Key{Special: SpecialTab, Mod: ModAlt}},
+		{name: "ctrl+alt+backspace", input: []byte{0x1b, '[', '1', '2', '7', ';', '7', 'u'}, want: Key{Special: SpecialBackspace, Mod: ModCtrl | ModAlt}},
+
+		// modifier combos on regular keys
+		{name: "ctrl+a", input: []byte{0x1b, '[', '9', '7', ';', '5', 'u'}, want: Key{Rune: 'a', Mod: ModCtrl}},
+		{name: "alt+z", input: []byte{0x1b, '[', '1', '2', '2', ';', '3', 'u'}, want: Key{Rune: 'z', Mod: ModAlt}},
+		{name: "ctrl+alt+shift+x", input: []byte{0x1b, '[', '1', '2', '0', ';', '8', 'u'}, want: Key{Rune: 'x', Mod: ModCtrl | ModAlt | ModShift}},
+
+		// event type in modifier field (should be stripped, not break parsing)
+		{name: "ctrl+a with press event", input: []byte{0x1b, '[', '9', '7', ';', '5', ':', '1', 'u'}, want: Key{Rune: 'a', Mod: ModCtrl}},
+		{name: "ctrl+a with repeat event", input: []byte{0x1b, '[', '9', '7', ';', '5', ':', '2', 'u'}, want: Key{Rune: 'a', Mod: ModCtrl}},
+		{name: "ctrl+a with release event", input: []byte{0x1b, '[', '9', '7', ';', '5', ':', '3', 'u'}, want: Key{Rune: 'a', Mod: ModCtrl}},
+
+		// no modifier (modifier value 1 = no modifiers)
+		{name: "enter with explicit mod 1", input: []byte{0x1b, '[', '1', '3', ';', '1', 'u'}, want: Key{Special: SpecialEnter}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewReader(bytes.NewReader(tt.input))
+			got, err := r.ReadKey()
+			if err != nil {
+				t.Fatalf("ReadKey() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ReadKey() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReaderCSIuMixedWithNormalInput(t *testing.T) {
+	// CSI u enter followed by regular 'j'
+	input := append([]byte{0x1b, '[', '1', '3', 'u'}, 'j')
+	r := NewReader(bytes.NewReader(input))
+
+	key1, err := r.ReadKey()
+	if err != nil {
+		t.Fatalf("first ReadKey() error = %v", err)
+	}
+	if key1.Special != SpecialEnter {
+		t.Errorf("first key: expected Enter, got %+v", key1)
+	}
+
+	key2, err := r.ReadKey()
+	if err != nil {
+		t.Fatalf("second ReadKey() error = %v", err)
+	}
+	if key2.Rune != 'j' {
+		t.Errorf("second key: expected 'j', got %+v", key2)
+	}
+}
+
+func TestReaderCSIuDisambiguation(t *testing.T) {
+	t.Run("enter and ctrl+m are distinct", func(t *testing.T) {
+		router := NewRouter()
+		var enterHit, ctrlMHit bool
+		router.Handle("<CR>", func(m Match) { enterHit = true })
+		router.Handle("<C-m>", func(m Match) { ctrlMHit = true })
+		input := NewInput(router)
+
+		input.Dispatch(Key{Special: SpecialEnter})
+		if !enterHit || ctrlMHit {
+			t.Error("expected only Enter handler to fire")
+		}
+
+		enterHit, ctrlMHit = false, false
+
+		input.Dispatch(Key{Rune: 'm', Mod: ModCtrl})
+		if enterHit || !ctrlMHit {
+			t.Error("expected only Ctrl+M handler to fire")
+		}
+	})
+
+	t.Run("tab and ctrl+i are distinct", func(t *testing.T) {
+		router := NewRouter()
+		var tabHit, ctrlIHit bool
+		router.Handle("<Tab>", func(m Match) { tabHit = true })
+		router.Handle("<C-i>", func(m Match) { ctrlIHit = true })
+		input := NewInput(router)
+
+		input.Dispatch(Key{Special: SpecialTab})
+		if !tabHit || ctrlIHit {
+			t.Error("expected only Tab handler to fire")
+		}
+
+		tabHit, ctrlIHit = false, false
+
+		input.Dispatch(Key{Rune: 'i', Mod: ModCtrl})
+		if tabHit || !ctrlIHit {
+			t.Error("expected only Ctrl+I handler to fire")
+		}
+	})
+
+	t.Run("backspace and ctrl+h are distinct", func(t *testing.T) {
+		router := NewRouter()
+		var bsHit, ctrlHHit bool
+		router.Handle("<BS>", func(m Match) { bsHit = true })
+		router.Handle("<C-h>", func(m Match) { ctrlHHit = true })
+		input := NewInput(router)
+
+		input.Dispatch(Key{Special: SpecialBackspace})
+		if !bsHit || ctrlHHit {
+			t.Error("expected only Backspace handler to fire")
+		}
+
+		bsHit, ctrlHHit = false, false
+
+		input.Dispatch(Key{Rune: 'h', Mod: ModCtrl})
+		if bsHit || !ctrlHHit {
+			t.Error("expected only Ctrl+H handler to fire")
+		}
+	})
+}

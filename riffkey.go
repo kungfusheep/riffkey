@@ -94,6 +94,13 @@ const (
 	BracketedPasteDisable = "\x1b[?2004l" // send to terminal to disable bracketed paste
 )
 
+// Kitty keyboard protocol escape sequences.
+// Enables disambiguation of keys like Ctrl+M vs Enter, Ctrl+I vs Tab, etc.
+const (
+	KittyKeyboardEnable  = "\x1b[>1u" // send to terminal to push kitty keyboard protocol (disambiguation mode)
+	KittyKeyboardDisable = "\x1b[<u"  // send to terminal to pop kitty keyboard protocol
+)
+
 // internal markers for paste sequence detection
 var (
 	pasteStartSeq = []byte{27, '[', '2', '0', '0', '~'} // ESC [ 200 ~
@@ -1841,6 +1848,11 @@ func (r *Reader) parseCSI(b []byte) Key {
 		return r.parseTildeSequence(b[:len(b)-1])
 	}
 
+	// CSI u sequences (kitty keyboard protocol): ESC [ codepoint ; modifier u
+	if b[len(b)-1] == 'u' {
+		return r.parseCSIu(b[:len(b)-1])
+	}
+
 	return Key{Special: SpecialEscape}
 }
 
@@ -1891,6 +1903,65 @@ func (r *Reader) parseTildeSequence(b []byte) Key {
 	}
 
 	return Key{Special: SpecialEscape}
+}
+
+// parseCSIu handles CSI u sequences from the kitty keyboard protocol.
+// format: ESC [ <codepoint> u  or  ESC [ <codepoint> ; <modifier>[:<event-type>] u
+func (r *Reader) parseCSIu(b []byte) Key {
+	if len(b) == 0 {
+		return Key{Special: SpecialEscape}
+	}
+
+	params := string(b)
+	var codepointStr, modStr string
+	if idx := strings.Index(params, ";"); idx != -1 {
+		codepointStr = params[:idx]
+		modStr = params[idx+1:]
+	} else {
+		codepointStr = params
+	}
+
+	codepoint, err := strconv.Atoi(codepointStr)
+	if err != nil {
+		return Key{Special: SpecialEscape}
+	}
+
+	// parse modifier, stripping optional :event-type suffix
+	var mod Modifier
+	if modStr != "" {
+		ms := modStr
+		if idx := strings.Index(ms, ":"); idx != -1 {
+			ms = ms[:idx]
+		}
+		modVal, err := strconv.Atoi(ms)
+		if err == nil && modVal > 1 {
+			n := modVal - 1
+			if n&1 != 0 {
+				mod |= ModShift
+			}
+			if n&2 != 0 {
+				mod |= ModAlt
+			}
+			if n&4 != 0 {
+				mod |= ModCtrl
+			}
+		}
+	}
+
+	switch codepoint {
+	case 9:
+		return Key{Special: SpecialTab, Mod: mod}
+	case 13:
+		return Key{Special: SpecialEnter, Mod: mod}
+	case 27:
+		return Key{Special: SpecialEscape, Mod: mod}
+	case 32:
+		return Key{Special: SpecialSpace, Mod: mod}
+	case 127:
+		return Key{Special: SpecialBackspace, Mod: mod}
+	}
+
+	return Key{Rune: rune(codepoint), Mod: mod}
 }
 
 // parseSS3 handles SS3 sequences: ESC O ...
