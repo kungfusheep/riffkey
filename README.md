@@ -2,6 +2,10 @@
 
 Terminal key input router for Go with vim-esque pattern matching and shared configuration.
 
+> [!TIP]  
+> **New:**  
+> [Attached Sub-routers](#attached-sub-routers) — Multiple routers per frame; `Enable`/`Disable` to switch between them.
+
 ## Features
 
 - Handler pattern with sequences (`gg`, `<C-w>j`, `<Leader>f`)
@@ -13,6 +17,7 @@ Terminal key input router for Go with vim-esque pattern matching and shared conf
 - Named bindings with runtime rebinding
 - Custom aliases e.g. `<Leader>`
 - Timeout-based disambiguation for overlapping patterns
+- Attached sub-routers with enable/disable for within-frame scoping
 - Optional shared config via `~/.config/riffkey.toml`
 - Easy Bubble Tea helpers
 
@@ -182,6 +187,40 @@ input.Push(insertRouter)
 // Back to normal mode
 input.Pop()
 ```
+
+## Attached Sub-routers
+
+Attach sub-routers to the current frame. Every enabled router in the frame
+participates in matching using the same trie and timeout rules as a single
+router.
+
+```go
+view := riffkey.NewRouter()
+folders := riffkey.NewRouter()
+messages := riffkey.NewRouter()
+preview := riffkey.NewRouter()
+
+folders.Handle("j", func(m riffkey.Match) { folderList.Down() })
+messages.Handle("j", func(m riffkey.Match) { messageList.Down() })
+preview.Handle("j", func(m riffkey.Match) { preview.Scroll(1) })
+
+input := riffkey.NewInput(view)
+input.Attach(folders)
+input.Attach(messages)
+input.Attach(preview)
+
+// Toggle which pane's bindings are live:
+folders.Disable()
+messages.Disable()
+preview.Enable()
+```
+
+Sub-routers shadow the primary on pattern collisions; later-attached wins
+among subs. Hooks fire on the matched router. Push creates a new frame
+and hides the attached subs until Pop.
+
+`Disable()` skips a router during matching; `Enable()` restores it. The
+router stays attached. `Detach(r)` removes it from the frame.
 
 ## Hooks
 

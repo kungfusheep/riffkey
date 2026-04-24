@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -251,6 +252,10 @@ type Router struct {
 	beforeHooks []func()
 	afterHooks  []func()
 
+	// disabled skips this router during frame matching when true.
+	// Zero value = enabled. Safe for concurrent access with Dispatch.
+	disabled atomic.Bool
+
 	// Send is called with the return value of MsgHandler functions.
 	// Set this to integrate with frameworks like Bubble Tea.
 	Send func(any)
@@ -326,6 +331,26 @@ func (r *Router) Name(name string) *Router {
 // GetName returns the router's name.
 func (r *Router) GetName() string {
 	return r.name
+}
+
+// Enable makes this router participate in frame matching.
+// Routers are enabled by default. Returns r for chaining.
+func (r *Router) Enable() *Router {
+	r.disabled.Store(false)
+	return r
+}
+
+// Disable removes this router from frame matching without detaching it.
+// While disabled, its patterns are ignored during dispatch.
+// Returns r for chaining.
+func (r *Router) Disable() *Router {
+	r.disabled.Store(true)
+	return r
+}
+
+// IsEnabled reports whether this router will participate in frame matching.
+func (r *Router) IsEnabled() bool {
+	return !r.disabled.Load()
 }
 
 // Clone creates a shallow copy of the router that shares the same handlers
@@ -1021,9 +1046,103 @@ func parseVimKey(s string) Key {
 	return key
 }
 
-// Input manages a stack of routers and dispatches keys.
+// frame is one slot in the router stack. It owns a primary router plus any
+// sub-routers attached via Input.Attach. All enabled routers in the top frame
+// participate in matching; pushing a new frame shadows the whole group.
+type frame struct {
+	primary *Router
+	subs    []*Router
+}
+
+// match walks every enabled router in the frame and returns the best match
+// across them. Semantics mirror Router.match — deepest handler along the
+// path, partial=true if any router has further children from the buffer's
+// current position. Ties on consumed-length resolve in favour of later-
+// iterated routers (primary first, then subs in attach order) so that
+// sub-routers shadow the primary when patterns overlap.
+func (f *frame) match(keys []Key) (handler Handler, consumed int, partial bool, matched *Router) {
+	consider := func(r *Router) {
+		if r == nil || !r.IsEnabled() {
+			return
+		}
+		h, c, p := r.match(keys)
+		if p {
+			partial = true
+		}
+		if h != nil && c >= consumed {
+			handler = h
+			consumed = c
+			matched = r
+		}
+	}
+	consider(f.primary)
+	for _, s := range f.subs {
+		consider(s)
+	}
+	return
+}
+
+// noCountsActive reports whether any enabled router in the frame has the
+// noCounts flag set. The most restrictive router wins so that attaching a
+// text-entry sub-router silences count-prefix consumption while active.
+func (f *frame) noCountsActive() bool {
+	if f.primary != nil && f.primary.IsEnabled() && f.primary.noCounts {
+		return true
+	}
+	for _, s := range f.subs {
+		if s != nil && s.IsEnabled() && s.noCounts {
+			return true
+		}
+	}
+	return false
+}
+
+// unmatchedHandler returns the fallback handler for keys no router matched.
+// Subs shadow primary; later-attached subs shadow earlier ones. Disabled
+// routers are skipped.
+func (f *frame) unmatchedHandler() func(Key) bool {
+	for i := len(f.subs) - 1; i >= 0; i-- {
+		s := f.subs[i]
+		if s != nil && s.IsEnabled() && s.unmatched != nil {
+			return s.unmatched
+		}
+	}
+	if f.primary != nil && f.primary.IsEnabled() && f.primary.unmatched != nil {
+		return f.primary.unmatched
+	}
+	return nil
+}
+
+// contains reports whether r is the primary or an attached sub of the frame.
+func (f *frame) contains(r *Router) bool {
+	if f.primary == r {
+		return true
+	}
+	for _, s := range f.subs {
+		if s == r {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEscapeSequences reports whether any router in the frame uses patterns
+// that generate terminal escape sequences.
+func (f *frame) hasEscapeSequences() bool {
+	if f.primary != nil && f.primary.HasEscapeSequences() {
+		return true
+	}
+	for _, s := range f.subs {
+		if s != nil && s.HasEscapeSequences() {
+			return true
+		}
+	}
+	return false
+}
+
+// Input manages a stack of router frames and dispatches keys.
 type Input struct {
-	stack         []*Router
+	stack         []*frame
 	buffer        []Key
 	countBuffer   string // accumulated digit characters for count prefix
 	mu            sync.Mutex
@@ -1045,20 +1164,22 @@ type Input struct {
 func NewInput(root *Router) *Input {
 	i := &Input{}
 	if root != nil {
-		i.stack = []*Router{root}
+		i.stack = []*frame{{primary: root}}
 	}
 	return i
 }
 
-// Push adds a router to the stack, making it the active router.
+// Push adds a router to the stack, making it the active frame.
+// Any sub-routers attached to previous frames are shadowed until Pop.
 func (i *Input) Push(r *Router) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.clearBuffer()
-	i.stack = append(i.stack, r)
+	i.stack = append(i.stack, &frame{primary: r})
 }
 
-// Pop removes the top router from the stack.
+// Pop removes the top frame from the stack, discarding any sub-routers
+// attached to it.
 func (i *Input) Pop() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -1068,28 +1189,29 @@ func (i *Input) Pop() {
 	}
 }
 
-// SetRouter replaces the base router (bottom of stack).
-// Any modals pushed on top are preserved.
+// SetRouter replaces the primary router of the base frame (bottom of stack).
+// Any frames pushed on top are preserved. Sub-routers attached to the base
+// frame are cleared (they belonged to the old primary's context).
 // Use this to swap between views without affecting modal state.
 func (i *Input) SetRouter(r *Router) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.clearBuffer()
 	if len(i.stack) == 0 {
-		i.stack = []*Router{r}
+		i.stack = []*frame{{primary: r}}
 	} else {
-		i.stack[0] = r
+		i.stack[0] = &frame{primary: r}
 	}
 }
 
-// Current returns the currently active router.
+// Current returns the primary router of the currently active frame.
 func (i *Input) Current() *Router {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if len(i.stack) == 0 {
 		return nil
 	}
-	return i.stack[len(i.stack)-1]
+	return i.stack[len(i.stack)-1].primary
 }
 
 // Depth returns the current stack depth.
@@ -1097,6 +1219,43 @@ func (i *Input) Depth() int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return len(i.stack)
+}
+
+// Attach adds a sub-router to the currently active frame. Its patterns
+// participate in matching alongside the frame's primary router (and any
+// other attached sub-routers) while it remains attached and enabled.
+//
+// Sub-routers are dropped automatically when the frame is popped. Use
+// Disable/Enable to silence a sub-router without detaching it.
+//
+// No-op if the stack is empty.
+func (i *Input) Attach(r *Router) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if len(i.stack) == 0 || r == nil {
+		return
+	}
+	i.clearBuffer()
+	top := i.stack[len(i.stack)-1]
+	top.subs = append(top.subs, r)
+}
+
+// Detach removes a sub-router from the currently active frame by identity.
+// No-op if the router is not attached to the top frame.
+func (i *Input) Detach(r *Router) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if len(i.stack) == 0 || r == nil {
+		return
+	}
+	top := i.stack[len(i.stack)-1]
+	for idx, sub := range top.subs {
+		if sub == r {
+			i.clearBuffer()
+			top.subs = append(top.subs[:idx], top.subs[idx+1:]...)
+			return
+		}
+	}
 }
 
 // isDigit checks if the key is a digit (for count prefix).
@@ -1199,10 +1358,10 @@ func (i *Input) Dispatch(key Key) bool {
 		return false
 	}
 
-	router := i.stack[len(i.stack)-1]
+	top := i.stack[len(i.stack)-1]
 
 	// Check if this is a count digit (but not if counts are disabled)
-	if i.isCountDigit(key) && len(i.buffer) == 0 && !router.noCounts {
+	if i.isCountDigit(key) && len(i.buffer) == 0 && !top.noCountsActive() {
 		// Accumulate count prefix
 		i.countBuffer += string(key.Rune)
 		return true
@@ -1221,7 +1380,7 @@ func (i *Input) Dispatch(key Key) bool {
 
 	i.buffer = append(i.buffer, key)
 
-	handler, consumed, partial := router.match(i.buffer)
+	handler, consumed, partial, matched := top.match(i.buffer)
 
 	// If we were pending and the new key doesn't extend the match AND
 	// there's no partial match possible, the sequence is broken
@@ -1229,9 +1388,9 @@ func (i *Input) Dispatch(key Key) bool {
 		i.buffer = nil
 		i.countBuffer = ""
 		// Try unmatched handler for the new key
-		if router.unmatched != nil {
+		if um := top.unmatchedHandler(); um != nil {
 			i.mu.Unlock()
-			handled := router.unmatched(key)
+			handled := um(key)
 			i.mu.Lock()
 			return handled
 		}
@@ -1247,11 +1406,11 @@ func (i *Input) Dispatch(key Key) bool {
 		i.countBuffer = ""
 
 		i.mu.Unlock()
-		for _, fn := range router.beforeHooks {
+		for _, fn := range matched.beforeHooks {
 			fn()
 		}
 		handler(Match{Keys: matchedKeys, Count: count})
-		for _, fn := range router.afterHooks {
+		for _, fn := range matched.afterHooks {
 			fn()
 		}
 		i.mu.Lock()
@@ -1263,13 +1422,16 @@ func (i *Input) Dispatch(key Key) bool {
 		i.pending = handler
 		i.pendingKeys = make([]Key, consumed)
 		copy(i.pendingKeys, i.buffer[:consumed])
-		i.pendingRouter = router
+		i.pendingRouter = matched
 		pendingCount := i.parseCount()
 
-		i.timer = time.AfterFunc(router.timeout, func() {
+		i.timer = time.AfterFunc(matched.timeout, func() {
 			i.mu.Lock()
-			// Only fire if pending is set and the router is still current
-			if i.pending != nil && len(i.stack) > 0 && i.stack[len(i.stack)-1] == i.pendingRouter {
+			// Only fire if pending is set, the frame is still current,
+			// and the pending router is still in it (and enabled).
+			if i.pending != nil && len(i.stack) > 0 &&
+				i.stack[len(i.stack)-1].contains(i.pendingRouter) &&
+				i.pendingRouter.IsEnabled() {
 				h := i.pending
 				keys := i.pendingKeys
 				r := i.pendingRouter
@@ -1302,9 +1464,9 @@ func (i *Input) Dispatch(key Key) bool {
 	i.buffer = nil
 	i.countBuffer = ""
 
-	if router.unmatched != nil {
+	if um := top.unmatchedHandler(); um != nil {
 		i.mu.Unlock()
-		handled := router.unmatched(key)
+		handled := um(key)
 		i.mu.Lock()
 		return handled
 	}
@@ -1947,10 +2109,10 @@ func (r *Reader) parseModifier(b byte) Modifier {
 // The callback is called after each dispatch for rendering/updates.
 // It automatically configures the reader based on the router's requirements.
 func (i *Input) Run(r *Reader, afterDispatch func(handled bool)) error {
-	// Auto-configure reader based on router's escape sequence requirements
+	// Auto-configure reader based on the top frame's escape sequence needs
 	i.mu.Lock()
 	if len(i.stack) > 0 {
-		r.SetParseEscapeSequences(i.stack[len(i.stack)-1].HasEscapeSequences())
+		r.SetParseEscapeSequences(i.stack[len(i.stack)-1].hasEscapeSequences())
 	}
 	i.mu.Unlock()
 

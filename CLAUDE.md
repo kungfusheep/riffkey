@@ -38,7 +38,7 @@ go test -race ./...
 
 1. **Trie-based pattern matching** - Patterns like `gg`, `<C-w>j`, `diw` are stored in a trie for efficient prefix matching
 2. **Timeout-based disambiguation** - When patterns overlap (e.g., `g` vs `gg`), the router waits for a configurable timeout before firing the shorter match
-3. **Router stack** - Enables modal input by pushing/popping routers (e.g., push insert-mode router, pop to return to normal mode)
+3. **Router stack** - Push/pop routers for modal input. Dispatch walks every enabled router in the top frame, so panes and other in-context bindings can attach without a modal push.
 4. **Named bindings** - Handlers registered with `HandleNamed()` can be introspected and rebound at runtime
 5. **Shared config** - TOML config at `~/.config/riffkey.toml` with `[global]` and per-app sections
 

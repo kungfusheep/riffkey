@@ -3019,3 +3019,305 @@ func TestUTF8Mode(t *testing.T) {
 		}
 	})
 }
+
+func TestAttachDispatchesToBothRouters(t *testing.T) {
+	view := NewRouter().Name("view")
+	pane := NewRouter().Name("pane")
+
+	var viewQ, paneJ atomic.Bool
+	view.Handle("q", func(m Match) { viewQ.Store(true) })
+	pane.Handle("j", func(m Match) { paneJ.Store(true) })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'q'})
+	input.Dispatch(Key{Rune: 'j'})
+
+	if !viewQ.Load() {
+		t.Error("expected view.q to fire")
+	}
+	if !paneJ.Load() {
+		t.Error("expected pane.j to fire")
+	}
+}
+
+func TestDisableSilencesSubRouter(t *testing.T) {
+	view := NewRouter()
+	pane := NewRouter()
+
+	var hits atomic.Int32
+	pane.Handle("j", func(m Match) { hits.Add(1) })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'j'})
+	if hits.Load() != 1 {
+		t.Fatalf("expected 1 hit, got %d", hits.Load())
+	}
+
+	pane.Disable()
+	if pane.IsEnabled() {
+		t.Error("expected pane to be disabled")
+	}
+	input.Dispatch(Key{Rune: 'j'})
+	if hits.Load() != 1 {
+		t.Errorf("disabled pane still fired: hits=%d", hits.Load())
+	}
+
+	pane.Enable()
+	if !pane.IsEnabled() {
+		t.Error("expected pane to be enabled")
+	}
+	input.Dispatch(Key{Rune: 'j'})
+	if hits.Load() != 2 {
+		t.Errorf("expected re-enabled pane to fire: hits=%d", hits.Load())
+	}
+}
+
+func TestAttachEmptyStackIsNoOp(t *testing.T) {
+	input := NewInput(nil)
+	pane := NewRouter()
+	pane.Handle("j", func(m Match) {})
+
+	// Should not panic
+	input.Attach(pane)
+	if input.Depth() != 0 {
+		t.Errorf("expected depth 0, got %d", input.Depth())
+	}
+	input.Detach(pane) // also fine on empty
+}
+
+func TestPushHidesAttachedSubs(t *testing.T) {
+	view := NewRouter()
+	pane := NewRouter()
+	modal := NewRouter()
+
+	var paneHits, modalHits atomic.Int32
+	pane.Handle("j", func(m Match) { paneHits.Add(1) })
+	modal.Handle("j", func(m Match) { modalHits.Add(1) })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'j'})
+	if paneHits.Load() != 1 || modalHits.Load() != 0 {
+		t.Fatalf("before push: pane=%d modal=%d", paneHits.Load(), modalHits.Load())
+	}
+
+	input.Push(modal)
+	input.Dispatch(Key{Rune: 'j'})
+	if paneHits.Load() != 1 {
+		t.Errorf("pane fired while modal is on top: paneHits=%d", paneHits.Load())
+	}
+	if modalHits.Load() != 1 {
+		t.Errorf("modal did not fire: modalHits=%d", modalHits.Load())
+	}
+
+	input.Pop()
+	input.Dispatch(Key{Rune: 'j'})
+	if paneHits.Load() != 2 {
+		t.Errorf("pane did not resume after pop: paneHits=%d", paneHits.Load())
+	}
+	if modalHits.Load() != 1 {
+		t.Errorf("modal fired after pop: modalHits=%d", modalHits.Load())
+	}
+}
+
+func TestDetachRemovesSpecificRouter(t *testing.T) {
+	view := NewRouter()
+	paneA := NewRouter()
+	paneB := NewRouter()
+
+	var aHits, bHits atomic.Int32
+	paneA.Handle("a", func(m Match) { aHits.Add(1) })
+	paneB.Handle("b", func(m Match) { bHits.Add(1) })
+
+	input := NewInput(view)
+	input.Attach(paneA)
+	input.Attach(paneB)
+
+	input.Dispatch(Key{Rune: 'a'})
+	input.Dispatch(Key{Rune: 'b'})
+	if aHits.Load() != 1 || bHits.Load() != 1 {
+		t.Fatalf("pre-detach: a=%d b=%d", aHits.Load(), bHits.Load())
+	}
+
+	input.Detach(paneA)
+
+	input.Dispatch(Key{Rune: 'a'})
+	input.Dispatch(Key{Rune: 'b'})
+	if aHits.Load() != 1 {
+		t.Errorf("detached paneA still fires: a=%d", aHits.Load())
+	}
+	if bHits.Load() != 2 {
+		t.Errorf("paneB should still fire: b=%d", bHits.Load())
+	}
+}
+
+func TestCrossRouterTimeoutAmbiguity(t *testing.T) {
+	// primary has 'gg', sub has 'g' — partial in primary must delay
+	// the sub's match until timeout.
+	view := NewRouter().Timeout(50 * time.Millisecond)
+	pane := NewRouter().Timeout(50 * time.Millisecond)
+
+	var paneG, viewGG atomic.Int32
+	view.Handle("gg", func(m Match) { viewGG.Add(1) })
+	pane.Handle("g", func(m Match) { paneG.Add(1) })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	// Single 'g' — partial (gg) exists, should wait for timeout then fire pane.g
+	input.Dispatch(Key{Rune: 'g'})
+	if paneG.Load() != 0 {
+		t.Fatal("pane.g fired immediately despite partial gg")
+	}
+	time.Sleep(120 * time.Millisecond)
+	if paneG.Load() != 1 {
+		t.Errorf("expected pane.g after timeout, got %d", paneG.Load())
+	}
+	if viewGG.Load() != 0 {
+		t.Errorf("view.gg should not have fired: %d", viewGG.Load())
+	}
+
+	// 'gg' in rapid succession — complete match of primary wins (longer).
+	input.Dispatch(Key{Rune: 'g'})
+	input.Dispatch(Key{Rune: 'g'})
+	if viewGG.Load() != 1 {
+		t.Errorf("expected view.gg to fire once, got %d", viewGG.Load())
+	}
+	if paneG.Load() != 1 {
+		t.Errorf("pane.g fired on gg sequence: %d", paneG.Load())
+	}
+}
+
+func TestSubShadowsPrimaryOnCollision(t *testing.T) {
+	view := NewRouter()
+	pane := NewRouter()
+
+	var viewHits, paneHits atomic.Int32
+	view.Handle("j", func(m Match) { viewHits.Add(1) })
+	pane.Handle("j", func(m Match) { paneHits.Add(1) })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'j'})
+	if paneHits.Load() != 1 {
+		t.Errorf("expected pane.j to win collision, got paneHits=%d", paneHits.Load())
+	}
+	if viewHits.Load() != 0 {
+		t.Errorf("view.j should have been shadowed, got %d", viewHits.Load())
+	}
+}
+
+func TestHooksFireOnMatchedRouter(t *testing.T) {
+	view := NewRouter()
+	pane := NewRouter()
+
+	var viewBefore, viewAfter atomic.Int32
+	var paneBefore, paneAfter atomic.Int32
+	view.AddOnBefore(func() { viewBefore.Add(1) })
+	view.AddOnAfter(func() { viewAfter.Add(1) })
+	pane.AddOnBefore(func() { paneBefore.Add(1) })
+	pane.AddOnAfter(func() { paneAfter.Add(1) })
+
+	view.Handle("q", func(m Match) {})
+	pane.Handle("j", func(m Match) {})
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'q'}) // matches view
+	if viewBefore.Load() != 1 || viewAfter.Load() != 1 {
+		t.Errorf("view hooks: before=%d after=%d", viewBefore.Load(), viewAfter.Load())
+	}
+	if paneBefore.Load() != 0 || paneAfter.Load() != 0 {
+		t.Errorf("pane hooks fired for view match: before=%d after=%d", paneBefore.Load(), paneAfter.Load())
+	}
+
+	input.Dispatch(Key{Rune: 'j'}) // matches pane
+	if paneBefore.Load() != 1 || paneAfter.Load() != 1 {
+		t.Errorf("pane hooks: before=%d after=%d", paneBefore.Load(), paneAfter.Load())
+	}
+	if viewBefore.Load() != 1 || viewAfter.Load() != 1 {
+		t.Errorf("view hooks fired for pane match: before=%d after=%d", viewBefore.Load(), viewAfter.Load())
+	}
+}
+
+func TestUnmatchedFallbackPrefersSub(t *testing.T) {
+	view := NewRouter()
+	pane := NewRouter()
+
+	var viewUnmatched, paneUnmatched atomic.Int32
+	view.HandleUnmatched(func(k Key) bool { viewUnmatched.Add(1); return true })
+	pane.HandleUnmatched(func(k Key) bool { paneUnmatched.Add(1); return true })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'z'})
+	if paneUnmatched.Load() != 1 {
+		t.Errorf("expected pane unmatched to win, got paneUnmatched=%d", paneUnmatched.Load())
+	}
+	if viewUnmatched.Load() != 0 {
+		t.Errorf("view unmatched should have been shadowed, got %d", viewUnmatched.Load())
+	}
+
+	// Disable pane: view unmatched should fire as fallback.
+	pane.Disable()
+	input.Dispatch(Key{Rune: 'z'})
+	if viewUnmatched.Load() != 1 {
+		t.Errorf("expected view unmatched after disabling pane, got %d", viewUnmatched.Load())
+	}
+}
+
+func TestNoCountsActiveViaSub(t *testing.T) {
+	// A text-entry sub that uses digits as input should silence
+	// count-prefix consumption while it's enabled.
+	view := NewRouter()
+	pane := NewRouter().NoCounts()
+
+	var captured []rune
+	pane.HandleUnmatched(func(k Key) bool {
+		captured = append(captured, k.Rune)
+		return true
+	})
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: '5'})
+	input.Dispatch(Key{Rune: '3'})
+
+	if !reflect.DeepEqual(captured, []rune{'5', '3'}) {
+		t.Errorf("expected digits to reach unmatched, got %v", captured)
+	}
+}
+
+func TestSetRouterClearsAttachedSubs(t *testing.T) {
+	view := NewRouter()
+	pane := NewRouter()
+
+	var paneHits atomic.Int32
+	pane.Handle("j", func(m Match) { paneHits.Add(1) })
+
+	input := NewInput(view)
+	input.Attach(pane)
+
+	input.Dispatch(Key{Rune: 'j'})
+	if paneHits.Load() != 1 {
+		t.Fatalf("pre-swap: %d", paneHits.Load())
+	}
+
+	// Swap base router — attached sub belongs to the old view context.
+	other := NewRouter()
+	input.SetRouter(other)
+
+	input.Dispatch(Key{Rune: 'j'})
+	if paneHits.Load() != 1 {
+		t.Errorf("pane still active after SetRouter: %d", paneHits.Load())
+	}
+}
