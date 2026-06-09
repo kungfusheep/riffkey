@@ -458,6 +458,22 @@ func NewTextHandler(value *string, cursor *int) *TextHandler {
 }
 
 // HandleKey processes a key for text editing. Returns true if handled.
+// wordStartBefore returns the index of the start of the word ending at cursor c:
+// it skips any trailing spaces, then the word characters, so deleting [start,c)
+// removes one whole word plus the spaces between it and the cursor. Returns c when
+// there is nothing to delete (c==0).
+func wordStartBefore(v string, c int) int {
+	end := c
+	for end > 0 && v[end-1] == ' ' {
+		end--
+	}
+	start := end
+	for start > 0 && v[start-1] != ' ' {
+		start--
+	}
+	return start
+}
+
 func (t *TextHandler) HandleKey(k Key) bool {
 	if t.Value == nil || t.Cursor == nil {
 		return false
@@ -487,6 +503,15 @@ func (t *TextHandler) HandleKey(k Key) bool {
 		v = v[:c] + " " + v[c:]
 		c++
 		changed = true
+
+	// Alt+Backspace - delete word backwards (opt+Backspace on macOS). Checked
+	// before plain Backspace so the modifier wins.
+	case k.Special == SpecialBackspace && k.Mod&ModAlt != 0:
+		if start := wordStartBefore(v, c); start < c {
+			v = v[:start] + v[c:]
+			c = start
+			changed = true
+		}
 
 	// Backspace
 	case k.Special == SpecialBackspace:
@@ -548,23 +573,10 @@ func (t *TextHandler) HandleKey(k Key) bool {
 
 	// Ctrl+W - delete word backwards
 	case k.Rune == 'w' && k.Mod == ModCtrl:
-		if c > 0 {
-			// Find start of previous word
-			end := c
-			// Skip trailing spaces
-			for end > 0 && v[end-1] == ' ' {
-				end--
-			}
-			// Skip word chars
-			start := end
-			for start > 0 && v[start-1] != ' ' {
-				start--
-			}
-			if start < c {
-				v = v[:start] + v[c:]
-				c = start
-				changed = true
-			}
+		if start := wordStartBefore(v, c); start < c {
+			v = v[:start] + v[c:]
+			c = start
+			changed = true
 		}
 
 	default:
@@ -1670,6 +1682,16 @@ func (r *Reader) ReadKey() (Key, error) {
 			if nextByte >= 32 && nextByte < 127 {
 				r.pos++
 				return Key{Rune: rune(nextByte), Mod: ModAlt}, nil
+			}
+
+			// Alt+Backspace: ESC then DEL (0x7f) or BS (0x08) — this is what
+			// opt+Backspace sends on macOS. Without this it degrades to a lone
+			// Escape, which closes modal dialogs and discards the user's input
+			// (the "any combo closes the dialog" bug). Surface it as a real
+			// Alt+Backspace so the text handler can delete a word instead.
+			if nextByte == 127 || nextByte == 8 {
+				r.pos++
+				return Key{Special: SpecialBackspace, Mod: ModAlt}, nil
 			}
 		}
 
