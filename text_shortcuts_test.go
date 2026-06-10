@@ -58,3 +58,52 @@ func TestTextHandlerAltBackspaceDeletesWord(t *testing.T) {
 		t.Fatalf("Ctrl+W: val=%q, want %q", val, "one ")
 	}
 }
+
+// opt+Enter on macOS sends ESC then CR — it must parse as Alt+Enter, NOT a lone
+// Escape (which closes modal dialogs, same trap as opt+Backspace).
+func TestReadAltEnterNotEscape(t *testing.T) {
+	for _, in := range [][]byte{{27, 13}, {27, 10}} {
+		r := NewReader(bytes.NewReader(in))
+		got, err := r.ReadKey()
+		if err != nil {
+			t.Fatalf("ReadKey(%v) error: %v", in, err)
+		}
+		want := Key{Special: SpecialEnter, Mod: ModAlt}
+		if got != want {
+			t.Fatalf("ReadKey(%v) = %+v, want %+v", in, got, want)
+		}
+	}
+}
+
+// Alt+Enter and Ctrl+J insert a newline ONLY when the field opts in via
+// AllowNewlines — a single-line field (filter query) must never get a '\n'.
+func TestTextHandlerNewlinesGated(t *testing.T) {
+	val, cur := "ab", 1
+	th := NewTextHandler(&val, &cur)
+
+	// default (single-line): both combos unhandled, value untouched
+	if th.HandleKey(Key{Special: SpecialEnter, Mod: ModAlt}) {
+		t.Fatal("Alt+Enter should be unhandled without AllowNewlines")
+	}
+	if th.HandleKey(Key{Rune: 'j', Mod: ModCtrl}) {
+		t.Fatal("Ctrl+J should be unhandled without AllowNewlines")
+	}
+	if val != "ab" {
+		t.Fatalf("single-line value corrupted: %q", val)
+	}
+
+	// multiline: both insert '\n' at the cursor
+	th.AllowNewlines = true
+	if !th.HandleKey(Key{Special: SpecialEnter, Mod: ModAlt}) {
+		t.Fatal("Alt+Enter should insert a newline with AllowNewlines")
+	}
+	if val != "a\nb" || cur != 2 {
+		t.Fatalf("after Alt+Enter: val=%q cur=%d, want \"a\\nb\"/2", val, cur)
+	}
+	if !th.HandleKey(Key{Rune: 'j', Mod: ModCtrl}) {
+		t.Fatal("Ctrl+J should insert a newline with AllowNewlines")
+	}
+	if val != "a\n\nb" || cur != 3 {
+		t.Fatalf("after Ctrl+J: val=%q cur=%d, want \"a\\n\\nb\"/3", val, cur)
+	}
+}

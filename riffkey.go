@@ -450,6 +450,11 @@ type TextHandler struct {
 	Value    *string
 	Cursor   *int
 	OnChange func(string) // optional callback when value changes
+
+	// AllowNewlines lets Alt+Enter and Ctrl+J insert a '\n' at the cursor — for
+	// multiline fields only. Single-line fields must leave it false so a stray
+	// combo can't corrupt the value (e.g. a filter query) with a newline.
+	AllowNewlines bool
 }
 
 // NewTextHandler creates a TextHandler bound to the given value and cursor.
@@ -492,6 +497,12 @@ func (t *TextHandler) HandleKey(k Key) bool {
 
 	changed := false
 	switch {
+	// Alt+Enter / Ctrl+J — newline, multiline fields only (see AllowNewlines)
+	case t.AllowNewlines && ((k.Special == SpecialEnter && k.Mod&ModAlt != 0) || (k.Rune == 'j' && k.Mod == ModCtrl)):
+		v = v[:c] + "\n" + v[c:]
+		c++
+		changed = true
+
 	// Printable character (no modifiers except shift)
 	case k.Rune != 0 && (k.Mod == ModNone || k.Mod == ModShift):
 		v = v[:c] + string(k.Rune) + v[c:]
@@ -1692,6 +1703,16 @@ func (r *Reader) ReadKey() (Key, error) {
 			if nextByte == 127 || nextByte == 8 {
 				r.pos++
 				return Key{Special: SpecialBackspace, Mod: ModAlt}, nil
+			}
+
+			// Alt+Enter: ESC then CR (or LF) — opt+Enter on macOS. Same trap as
+			// Alt+Backspace: without this it degrades to a lone Escape and closes
+			// the dialog. Surfaced as Alt+Enter so multiline fields can insert a
+			// newline (the no-protocol stand-in for Shift+Enter, which terminals
+			// can't report without an enhanced keyboard protocol).
+			if nextByte == 13 || nextByte == 10 {
+				r.pos++
+				return Key{Special: SpecialEnter, Mod: ModAlt}, nil
 			}
 		}
 
