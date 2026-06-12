@@ -497,6 +497,18 @@ func (t *TextHandler) HandleKey(k Key) bool {
 
 	changed := false
 	switch {
+	// Bracketed paste — insert the whole payload at the cursor. Single-line
+	// fields fold newlines to spaces; multiline fields keep them.
+	case k.IsPaste():
+		p := strings.ReplaceAll(k.Paste, "\r\n", "\n")
+		p = strings.ReplaceAll(p, "\r", "\n")
+		if !t.AllowNewlines {
+			p = strings.ReplaceAll(p, "\n", " ")
+		}
+		v = v[:c] + p + v[c:]
+		c += len(p)
+		changed = true
+
 	// Alt+Enter / Ctrl+J — newline, multiline fields only (see AllowNewlines)
 	case t.AllowNewlines && ((k.Special == SpecialEnter && k.Mod&ModAlt != 0) || (k.Rune == 'j' && k.Mod == ModCtrl)):
 		v = v[:c] + "\n" + v[c:]

@@ -3321,3 +3321,27 @@ func TestSetRouterClearsAttachedSubs(t *testing.T) {
 		t.Errorf("pane still active after SetRouter: %d", paneHits.Load())
 	}
 }
+
+// bracketed paste inserts the payload at the cursor: single-line fields fold
+// newlines to spaces, multiline fields keep them, CRLF normalised.
+func TestTextHandlerPaste(t *testing.T) {
+	v, c := "hello world", 5
+	th := NewTextHandler(&v, &c)
+	if !th.HandleKey(Key{Paste: " pasted\r\nbit"}) {
+		t.Fatal("paste not handled")
+	}
+	if v != "hello pasted bit world" {
+		t.Fatalf("single-line paste = %q", v)
+	}
+	if c != len("hello pasted bit") {
+		t.Fatalf("cursor = %d", c)
+	}
+
+	v2, c2 := "", 0
+	th2 := NewTextHandler(&v2, &c2)
+	th2.AllowNewlines = true
+	th2.HandleKey(Key{Paste: "line one\r\nline two"})
+	if v2 != "line one\nline two" {
+		t.Fatalf("multiline paste = %q", v2)
+	}
+}
