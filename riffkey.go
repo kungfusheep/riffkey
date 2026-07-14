@@ -1940,6 +1940,12 @@ func (r *Reader) parseSingleByte(b byte) Key {
 	case b < 27:
 		// Ctrl+A through Ctrl+Z (1-26), includes Ctrl+j (10)
 		return Key{Rune: rune('a' + b - 1), Mod: ModCtrl}
+	case b >= 28 && b <= 31:
+		// Ctrl+\ (28), Ctrl+] (29), Ctrl+^ (30), Ctrl+_ (31). A control code is its
+		// symbol with bit 6 cleared, so adding it back recovers the key: without
+		// this they arrive as bare unprintable runes and a <C-\> pattern, which
+		// parses fine, can never match.
+		return Key{Rune: rune(b + 64), Mod: ModCtrl}
 	case b == 32:
 		return Key{Special: SpecialSpace}
 	default:

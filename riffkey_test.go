@@ -3345,3 +3345,38 @@ func TestTextHandlerPaste(t *testing.T) {
 		t.Fatalf("multiline paste = %q", v2)
 	}
 }
+
+// TestCtrlSymbolKeys covers the control codes above Ctrl-Z. They are the symbol
+// with bit 6 cleared, so they must decode back to the symbol with ModCtrl —
+// otherwise they arrive as bare unprintable runes and a pattern like <C-\>, which
+// parses perfectly well, can never match the key the terminal actually sends.
+func TestCtrlSymbolKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		b       byte
+		pattern string
+		want    rune
+	}{
+		{"ctrl-backslash", 0x1c, `<C-\>`, '\\'},
+		{"ctrl-rbracket", 0x1d, `<C-]>`, ']'},
+		{"ctrl-caret", 0x1e, `<C-^>`, '^'},
+		{"ctrl-underscore", 0x1f, `<C-_>`, '_'},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewReader(bytes.NewReader([]byte{tc.b}))
+			got, err := r.ReadKey()
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if got.Rune != tc.want || got.Mod != ModCtrl {
+				t.Errorf("byte %#x decoded to %+v, want Rune %q with ModCtrl", tc.b, got, tc.want)
+			}
+			// the whole point: what the terminal sends must equal what the pattern binds
+			if want := ParsePattern(tc.pattern)[0]; got != want {
+				t.Errorf("byte %#x decoded to %+v but pattern %s binds %+v — the binding can never fire", tc.b, got, tc.pattern, want)
+			}
+		})
+	}
+}
