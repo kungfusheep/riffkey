@@ -19,6 +19,7 @@ Terminal key input router for Go with vim-esque pattern matching and shared conf
 - Timeout-based disambiguation for overlapping patterns
 - Attached sub-routers with enable/disable for within-frame scoping
 - Optional shared config via `~/.config/riffkey.toml`
+- Text input handling with cursor, word-delete and bracketed paste
 - Easy Bubble Tea helpers
 
 ## Usage
@@ -59,6 +60,7 @@ Patterns are case-sensitive.
 | `<M-x>` | Alt+x (M is alias for Alt) |
 | `<S-Tab>` | Shift+Tab |
 | `<C-A-d>` | Ctrl+Alt+d |
+| `<C-\>` `<C-]>` `<C-^>` `<C-_>` | Ctrl with a symbol key |
 | `<C-w><C-j>` | Ctrl+w then Ctrl+j |
 | `<C-w>j` | Ctrl+w then j |
 | `<Esc>` | Escape |
@@ -221,6 +223,45 @@ and hides the attached subs until Pop.
 
 `Disable()` skips a router during matching; `Enable()` restores it. The
 router stays attached. `Detach(r)` removes it from the frame.
+
+## Text Input
+
+`TextInput` turns a router into a text field. Unmatched keys are fed to a
+`TextHandler`, which edits the string and moves the cursor for you.
+
+```go
+var value string
+var cursor int
+
+insert := riffkey.NewRouter()
+insert.Handle("<Esc>", func(m riffkey.Match) { input.Pop() })
+insert.TextInput(&value, &cursor)
+```
+
+Editing keys handled automatically:
+
+| Key | Action |
+|-----|--------|
+| Printable, `<Space>` | Insert at cursor |
+| `<BS>` `<Delete>` | Delete before/at cursor |
+| `<A-BS>` or `<C-w>` | Delete word backwards |
+| `<Left>` `<Right>` | Move cursor |
+| `<Home>` `<End>` or `<C-a>` `<C-e>` | Start/end of line |
+| `<C-k>` `<C-u>` | Kill to end/start of line |
+
+Bracketed paste inserts the whole payload at the cursor in one edit.
+
+For a multiline field, use `NewTextHandler` directly and set `AllowNewlines`.
+`<A-CR>` and `<C-j>` then insert a newline, and pasted newlines are kept. It
+defaults to false so a stray combo cannot put a newline into a single-line
+value such as a filter query, where pasted newlines fold to spaces instead.
+
+```go
+th := riffkey.NewTextHandler(&value, &cursor)
+th.AllowNewlines = true
+th.OnChange = func(s string) { model.Filter(s) }
+insert.HandleUnmatched(th.HandleKey)
+```
 
 ## Hooks
 
